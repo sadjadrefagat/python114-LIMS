@@ -133,3 +133,12 @@ async def read_languages(search: str = None):
     """دریافت تمام زبان‌ها و بازگرداندن آن‌ها به صورت JSON"""
     languages = get_all_languages(search)
     return {"languages": [dict(zip([column[0] for column in languages[0].cursor_description], row)) for row in languages]}
+
+@app.post("/languages")
+async def create_languages(language: dict):
+    """ایجاد یک زبان جدید"""
+    query = """INSERT INTO language ([Name])
+               VALUES (?)"""
+    execute_nonequery_with_params(
+        query, (language["name"]))
+    return {"message": "language created successfully"}
