@@ -135,10 +135,76 @@ async def read_languages(search: str = None):
     return {"languages": [dict(zip([column[0] for column in languages[0].cursor_description], row)) for row in languages]}
 
 @app.post("/languages")
-async def create_languages(language: dict):
+async def create_language(language: dict):
     """ایجاد یک زبان جدید"""
-    query = """INSERT INTO language ([Name])
+    query = """INSERT INTO Language ([Name])
                VALUES (?)"""
     execute_nonequery_with_params(
-        query, (language["name"]))
-    return {"message": "language created successfully"}
+        query, (language["name"],))
+    return {"message": "Language created successfully"}
+
+def get_all_students(search: str = None):
+    """دریافت تمام زبان آموزان از جدول Student"""
+    query = """SELECT
+        S.Id,
+        S.FirstName,
+        S.LastName,
+        S.FatherName,
+        S.NationalCode,
+        S.Gender,
+        S.BirthDate,
+        S.Mobile
+    FROM Student S"""
+    if search:
+        query += " AND (S.FirstName LIKE ? OR S.LastName LIKE?)"
+        return execute_query_with_params(query, (f"%{search}%",f"%{search}%"))
+    else:
+        return execute_query(query)
+
+@app.get("/students")
+async def read_students(search: str = None):
+    """دریافت تمام زبان آموزان و بازگرداندن آن‌ها به صورت JSON"""
+    students = get_all_students(search)
+    return {"students": [dict(zip([column[0] for column in students[0].cursor_description], row)) for row in students]}
+
+@app.post("/students")
+async def create_student(student: dict):
+    """ایجاد یک زبان آموز جدید"""
+    query = """INSERT INTO Student ([FirstName],[LastName],[FatherName],[NationalCode],[Gender],[BirthDate],[Mobile])
+               VALUES (?,?,?,?,?,?,?)"""
+    execute_nonequery_with_params(
+        query, (student["first_name"] , student["last_name"],student["father_name"],student["national_code"],student["gender"],student["birth_date"],student["mobile"]))
+    return {"message": "Student created successfully"}\
+    
+def get_all_teachers(search: str = None):
+    """دریافت تمام مدرسان از جدول Teacher"""
+    query = """SELECT
+        T.Id,
+        T.FirstName,
+        T.LastName,
+        T.FatherName,
+        T.NationalCode,
+        T.Gender,
+        T.BirthDate
+    FROM Teacher T"""
+    if search:
+        query += " AND (T.FirstName LIKE ? OR T.LastName LIKE?)"
+        return execute_query_with_params(query, (f"%{search}%",f"%{search}%"))
+    else:
+        return execute_query(query)
+
+@app.get("/teachers")
+async def read_teachers(search: str = None):
+    """دریافت تمام مدرسان و بازگرداندن آن‌ها به صورت JSON"""
+    teachers = get_all_teachers(search)
+    return {"teachers": [dict(zip([column[0] for column in teachers[0].cursor_description], row)) for row in teachers]}
+
+@app.post("/teachers")
+async def create_teacher(teacher: dict):
+    """ایجاد یک مدرس جدید"""
+    query = """INSERT INTO Teacher ([FirstName],[LastName],[FatherName],[NationalCode],[Gender],[BirthDate])
+               VALUES (?,?,?,?,?,?)"""
+    execute_nonequery_with_params(
+        query, (teacher["first_name"] ,teacher["last_name"],teacher["father_name"],teacher["national_code"],teacher["gender"],teacher["birth_date"]))
+    return {"message": "Teacher created successfully"}\
+    
