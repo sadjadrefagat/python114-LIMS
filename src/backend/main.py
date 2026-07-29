@@ -554,6 +554,7 @@ async def list_teachers(search: Optional[str] = None, include_inactive: bool = F
     query += " ORDER BY LastName, FirstName"
     return _ok_list("teachers", fetch_all(query, tuple(params)))
 
+<<<<<<< HEAD
 
 @app.get("/teachers/{teacher_id}")
 async def get_teacher(teacher_id: int, user: dict = AuthDep):
@@ -1320,3 +1321,209 @@ async def report_summary(user: dict = FinanceDep):
             "SELECT ISNULL(SUM(Amount), 0) AS Total FROM Payment WHERE Status = N'paid'"
         )["Total"],
     }
+=======
+    
+@app.get("/languages")
+async def read_languages(search: str = None):
+    """دریافت تمام زبان‌ها و بازگرداندن آن‌ها به صورت JSON"""
+    languages = get_all_languages(search)
+    return {"languages": [dict(zip([column[0] for column in languages[0].cursor_description], row)) for row in languages]}
+
+@app.post("/languages")
+async def create_language(language: dict):
+    """ایجاد یک زبان جدید"""
+    query = """INSERT INTO Language ([Name])
+               VALUES (?)"""
+    execute_nonequery_with_params(
+        query, (language["name"],))
+    return {"message": "Language created successfully"}
+
+def get_all_students(search: str = None):
+    """دریافت تمام زبان آموزان از جدول Student"""
+    query = """SELECT
+        S.Id,
+        S.FirstName,
+        S.LastName,
+        S.FatherName,
+        S.NationalCode,
+        S.Gender,
+        S.BirthDate,
+        S.Mobile
+    FROM Student S"""
+    if search:
+        query += " AND (S.FirstName LIKE ? OR S.LastName LIKE?)"
+        return execute_query_with_params(query, (f"%{search}%",f"%{search}%"))
+    else:
+        return execute_query(query)
+
+@app.get("/students")
+async def read_students(search: str = None):
+    """دریافت تمام زبان آموزان و بازگرداندن آن‌ها به صورت JSON"""
+    students = get_all_students(search)
+    return {"students": [dict(zip([column[0] for column in students[0].cursor_description], row)) for row in students]}
+
+@app.post("/students")
+async def create_student(student: dict):
+    """ایجاد یک زبان آموز جدید"""
+    query = """INSERT INTO Student ([FirstName],[LastName],[FatherName],[NationalCode],[Gender],[BirthDate],[Mobile])
+               VALUES (?,?,?,?,?,?,?)"""
+    execute_nonequery_with_params(
+        query, (student["first_name"] , student["last_name"],student["father_name"],student["national_code"],student["gender"],student["birth_date"],student["mobile"]))
+    return {"message": "Student created successfully"}\
+    
+def get_all_teachers(search: str = None):
+    """دریافت تمام مدرسان از جدول Teacher"""
+    query = """SELECT
+        T.Id,
+        T.FirstName,
+        T.LastName,
+        T.FatherName,
+        T.NationalCode,
+        T.Gender,
+        T.BirthDate
+    FROM Teacher T"""
+    if search:
+        query += " AND (T.FirstName LIKE ? OR T.LastName LIKE?)"
+        return execute_query_with_params(query, (f"%{search}%",f"%{search}%"))
+    else:
+        return execute_query(query)
+
+@app.get("/teachers")
+async def read_teachers(search: str = None):
+    """دریافت تمام مدرسان و بازگرداندن آن‌ها به صورت JSON"""
+    teachers = get_all_teachers(search)
+    return {"teachers": [dict(zip([column[0] for column in teachers[0].cursor_description], row)) for row in teachers]}
+
+@app.post("/teachers")
+async def create_teacher(teacher: dict):
+    """ایجاد یک مدرس جدید"""
+    query = """INSERT INTO Teacher ([FirstName],[LastName],[FatherName],[NationalCode],[Gender],[BirthDate])
+               VALUES (?,?,?,?,?,?)"""
+    execute_nonequery_with_params(
+        query, (teacher["first_name"] ,teacher["last_name"],teacher["father_name"],teacher["national_code"],teacher["gender"],teacher["birth_date"]))
+    return {"message": "Teacher created successfully"}\
+
+
+def get_all_class(search: str = None):
+    """دریافت تمام کلاس ها از جدول Class"""
+    query = """SELECT
+        C.Id
+        C.CourseRef
+        C.TeacherRef
+        C.SessionType
+    FROM Class C"""
+    if search:
+        query += " AND (C.CourseRef LIKE ? OR C.TeacherRef LIKE? OR C.SessionType LIKE?)"
+        return execute_query_with_params(query, (f"%{search}%",f"%{search}%"))
+    else:
+        return execute_query(query)
+
+@app.get("/class")
+async def read_class(search: str = None):
+    """دریافت تمام کلاس ها و بازگرداندن آن‌ها به صورت JSON"""
+    class = get_all_class(search)
+    return {"class": [dict(zip([column[0] for column in class[0].class_description], row)) for row in class]}
+
+@app.post("/class")
+async def create_class(class: dict):
+    """ایجاد یک کلاس جدید"""
+    query = """INSERT INTO class ([CourseRef],[TeacherRef],[SessionType])
+               VALUES (?,?,?)"""
+    execute_nonequery_with_params(
+        query, (class["course_ref"] , class["teacher_ref"],class["session_type"]))
+    return {"message": "class created successfully"}
+
+
+
+def get_all_payment(search: str = None):
+    """دریافت تمام پرداختی ها از جدول Payment"""
+    query = """SELECT
+        P.Id
+        P.StudentRef
+        P.Date
+        P.Amount
+        P.PaymentType
+    FROM Payment P"""
+    if search:
+        query += " AND (P.StudentRef LIKE ? OR P.Date LIKE? OR P.Amount LIKE? OR P.PaymentType LIKE?)"
+        return execute_query_with_params(query, (f"%{search}%",f"%{search}%"))
+    else:
+        return execute_query(query)
+
+@app.get("/payment")
+async def read_payment(search: str = None):
+    """دریافت تمام پرداختی ها و بازگرداندن آن‌ها به صورت JSON"""
+    payment = get_all_payment(search)
+    return {"payment": [dict(zip([column[0] for column in payment[0].payment_description], row)) for row in payment]}
+
+@app.post("/payment")
+async def create_payment(payment: dict):
+    """ایجاد یک پرداختی"""
+    query = """INSERT INTO Payment ([StudentRef],[Date],[Amount],[PaymentType])
+               VALUES (?,?,?,?)"""
+    execute_nonequery_with_params(
+        query, (payment["student_ref"], payment["date"],payment["amount"],payment["payment_type"]))
+    return {"message": "payment created successfully"}
+
+
+def get_all_registration(search: str = None):
+    """دریافت تمام ثبت نام ها از جدول Registration"""
+    query = """SELECT
+        R.Id
+        R.StudentRef
+        R.CourseRef
+        R.Date
+        
+    FROM Registration R"""
+    if search:
+        query += " AND (R.StudentRef LIKE ? OR R.CourseRef LIKE? OR R.Date LIKE?)"
+        return execute_query_with_params(query, (f"%{search}%",f"%{search}%"))
+    else:
+        return execute_query(query)
+
+@app.get("/registration")
+async def read_registration(search: str = None):
+    """دریافت تمام ثبت نام ها و بازگرداندن آن‌ها به صورت JSON"""
+    registration = get_all_registration(search)
+    return {"registration": [dict(zip([column[0] for column in registration[0].registration_description], row)) for row in registration]}
+
+@app.post("/registration")
+async def create_registration(registration: dict):
+    """ایجاد یک ثبت نام جدید"""
+    query = """INSERT INTO Registration ([StudentRef],[CourseRef],[Date])
+               VALUES (?,?,?)"""
+    execute_nonequery_with_params(
+        query, (registration["student_ref"], registration["course_ref"],registration["date"]))
+    return {"message": "registration created successfully"}
+
+
+
+def get_all_sessiontype(search: str = None):
+    """دریافت تمام ثبت نام ها از جدول SessionType"""
+    query = """SELECT
+        ST.Id
+        ST.Name
+        
+    FROM SessionType ST"""
+    if search:
+        query += " AND (ST.Name LIKE ?)"
+        return execute_query_with_params(query, (f"%{search}%",f"%{search}%"))
+    else:
+        return execute_query(query)
+
+@app.get("/sessiontype")
+async def read_sessiontype(search: str = None):
+    """دریافت تمام ثبت نام ها و بازگرداندن آن‌ها به صورت JSON"""
+    sessiontype = get_all_sessiontype(search)
+    return {"sessiontype": [dict(zip([column[0] for column in sessiontype[0].sessiontype_description], row)) for row in sessiontype]}
+
+@app.post("/sessiontype")
+async def create_sessiontype(sessiontype: dict):
+    """ایجاد یک ثبت نام جدید"""
+    query = """INSERT INTO SessionType ([Name])
+               VALUES (?)"""
+    execute_nonequery_with_params(
+        query, (sessiontype["name"]))
+    return {"message": "sessiontype created successfully"}
+
+>>>>>>> 576d6e616722950403878ecba766958249238a55
