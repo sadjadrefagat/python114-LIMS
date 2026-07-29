@@ -1,2 +1,7 @@
 database/LIMDB_log.ldf
 database/LIMDB.mdf
+src/backend/.env
+**/__pycache__/
+*.pyc
+.venv/
+venv/

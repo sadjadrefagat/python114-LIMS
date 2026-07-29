@@ -1,5 +1,10 @@
 ﻿USE [master]
 GO
+/*
+  اسکریپت اولیه ساخت پایگاه داده LIMDB (نسخه آموزشی قدیمی)
+  برای تکمیل اسکیما مطابق SRS فاز ۱، پس از ساخت دیتابیس این فایل را اجرا کنید:
+    query/Upgrade Schema Phase1.sql
+*/
 /****** Object:  Database [LIMDB]    Script Date: 7/22/2026 7:23:53 PM ******/
 CREATE DATABASE [LIMDB]
  CONTAINMENT = NONE
