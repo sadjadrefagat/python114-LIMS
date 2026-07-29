@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------- Auth ----------
@@ -15,15 +15,31 @@ class LoginRequest(BaseModel):
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=8, max_length=100)
-    email: Optional[EmailStr] = None
-    full_name: str = Field(..., min_length=2, max_length=100)
+    email: Optional[str] = Field(None, max_length=100)
+    first_name: str = Field(..., min_length=1, max_length=50)
+    last_name: str = Field(..., min_length=1, max_length=50)
+    father_name: str = Field(..., min_length=1, max_length=50)
     mobile: str = Field(..., min_length=8, max_length=20)
     national_code: str = Field(..., min_length=10, max_length=10)
     gender: Literal[1, 2] = 1
     birth_date: str = Field(..., pattern=r"^\d{4}/\d{2}/\d{2}$")
-    father_name: str = Field(..., min_length=1, max_length=50)
     target_language_ref: Optional[int] = None
     preferred_ui_language: Literal["fa", "en"] = "fa"
+
+    @field_validator("email")
+    @classmethod
+    def empty_email_to_none(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+    @field_validator("national_code")
+    @classmethod
+    def national_code_digits(cls, v: str) -> str:
+        if not v.isdigit() or len(v) != 10:
+            raise ValueError("کد ملی باید ۱۰ رقم باشد")
+        return v
 
 
 class RefreshRequest(BaseModel):
