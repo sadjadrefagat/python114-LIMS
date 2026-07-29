@@ -20,28 +20,34 @@ const financeMap = {
   partial: 'جزئی',
 }
 
+const emptyForm = {
+  student_ref: '',
+  class_ref: '',
+  date: '',
+  status: 'pending_payment',
+  financial_status: 'debtor',
+  withdraw_reason: '',
+}
+
 export default function Enrollments() {
   const [rows, setRows] = useState([])
   const [students, setStudents] = useState([])
   const [classes, setClasses] = useState([])
+  const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({
-    student_ref: '',
-    class_ref: '',
-    date: '',
-    status: 'pending_payment',
-    financial_status: 'debtor',
-  })
+  const [editId, setEditId] = useState(null)
+  const [form, setForm] = useState(emptyForm)
 
-  async function load() {
+  async function load(q = search) {
     setLoading(true)
     try {
+      const query = q.trim() ? `?search=${encodeURIComponent(q.trim())}` : ''
       const [en, st, cl] = await Promise.all([
-        api.get('/enrollments'),
+        api.get(`/enrollments${query}`),
         api.get('/students'),
         api.get('/classes'),
       ])
@@ -57,29 +63,83 @@ export default function Enrollments() {
   }
 
   useEffect(() => {
-    load()
-  }, [])
+    const t = setTimeout(() => load(search), 250)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search])
 
-  async function handleCreate(e) {
+  function resetForm() {
+    setEditId(null)
+    setForm(emptyForm)
+    setShowCreate(false)
+  }
+
+  function startEdit(row) {
+    setEditId(row.Id)
+    setForm({
+      student_ref: String(row.StudentRef || ''),
+      class_ref: row.ClassRef ? String(row.ClassRef) : '',
+      date: row.Date || '',
+      status: row.Status || 'pending_payment',
+      financial_status: row.FinancialStatus || 'debtor',
+      withdraw_reason: row.WithdrawReason || '',
+    })
+    setShowCreate(true)
+    setMessage('')
+    setError('')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  async function handleSubmit(e) {
     e.preventDefault()
     setBusy(true)
     setError('')
     setMessage('')
+
+    if (editId && form.status === 'withdrawn' && !form.withdraw_reason.trim()) {
+      setError('برای انصراف، دلیل الزامی است')
+      setBusy(false)
+      return
+    }
+
     try {
-      await api.post('/enrollments', {
-        student_ref: Number(form.student_ref),
-        class_ref: Number(form.class_ref),
-        date: form.date,
-        status: form.status,
-        financial_status: form.financial_status,
-      })
-      setMessage('ثبت‌نام انجام شد')
-      setShowCreate(false)
-      await load()
+      if (editId) {
+        await api.put(`/enrollments/${editId}`, {
+          status: form.status,
+          financial_status: form.financial_status,
+          withdraw_reason: form.status === 'withdrawn' ? form.withdraw_reason.trim() : null,
+        })
+        setMessage('ثبت‌نام ویرایش شد')
+      } else {
+        await api.post('/enrollments', {
+          student_ref: Number(form.student_ref),
+          class_ref: Number(form.class_ref),
+          date: form.date,
+          status: form.status,
+          financial_status: form.financial_status,
+        })
+        setMessage('ثبت‌نام انجام شد')
+      }
+      resetForm()
+      await load(search)
     } catch (err) {
       setError(err.message)
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function handleDelete(row) {
+    if (!window.confirm(`لغو ثبت‌نام «${row.StudentName}» در «${row.CourseName}»؟`)) return
+    setError('')
+    setMessage('')
+    try {
+      await api.delete(`/enrollments/${row.Id}`)
+      setMessage('ثبت‌نام به حالت انصراف تغییر یافت')
+      if (editId === row.Id) resetForm()
+      await load(search)
+    } catch (err) {
+      setError(err.message)
     }
   }
 
@@ -90,18 +150,41 @@ export default function Enrollments() {
           <h1 className="section-title h3 mb-1">ثبت‌نام‌ها</h1>
           <p className="muted mb-0">وضعیت ثبت‌نام زبان‌آموز در کلاس</p>
         </div>
-        <button className="btn btn-brand rounded-pill" onClick={() => setShowCreate((v) => !v)}>
-          {showCreate ? 'بستن' : 'ثبت‌نام جدید'}
-        </button>
+        <div className="d-flex gap-2">
+          <input
+            className="form-control"
+            style={{ maxWidth: 240 }}
+            placeholder="جستجو"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <button
+            className="btn btn-brand rounded-pill"
+            onClick={() => (showCreate ? resetForm() : setShowCreate(true))}
+          >
+            {showCreate ? 'بستن' : 'ثبت‌نام جدید'}
+          </button>
+        </div>
       </div>
 
       {showCreate && (
         <div className="create-panel">
-          <form className="row g-2" onSubmit={handleCreate}>
+          <div className="d-flex justify-content-between align-items-center mb-2">
+            <h2 className="h6 fw-bold mb-0">
+              {editId ? `ویرایش ثبت‌نام #${editId}` : 'ثبت‌نام جدید'}
+            </h2>
+            {editId && (
+              <button type="button" className="btn btn-sm btn-outline-secondary rounded-pill" onClick={resetForm}>
+                انصراف
+              </button>
+            )}
+          </div>
+          <form className="row g-2" onSubmit={handleSubmit}>
             <div className="col-md-4">
               <label className="form-label">زبان‌آموز</label>
               <VazirSelect
                 required
+                disabled={Boolean(editId)}
                 value={form.student_ref}
                 onChange={(v) => setForm((p) => ({ ...p, student_ref: v }))}
                 options={students.map((s) => ({
@@ -114,6 +197,7 @@ export default function Enrollments() {
               <label className="form-label">کلاس</label>
               <VazirSelect
                 required
+                disabled={Boolean(editId)}
                 value={form.class_ref}
                 onChange={(v) => setForm((p) => ({ ...p, class_ref: v }))}
                 options={classes.map((c) => ({
@@ -126,6 +210,7 @@ export default function Enrollments() {
               <label className="form-label">تاریخ ثبت‌نام</label>
               <JalaliDatePicker
                 required
+                disabled={Boolean(editId)}
                 value={form.date}
                 onChange={(v) => setForm((p) => ({ ...p, date: v }))}
               />
@@ -146,9 +231,20 @@ export default function Enrollments() {
                 options={Object.entries(financeMap).map(([value, label]) => ({ value, label }))}
               />
             </div>
+            {editId && form.status === 'withdrawn' && (
+              <div className="col-md-4">
+                <label className="form-label">دلیل انصراف</label>
+                <input
+                  className="form-control"
+                  value={form.withdraw_reason}
+                  onChange={(e) => setForm((p) => ({ ...p, withdraw_reason: e.target.value }))}
+                  required
+                />
+              </div>
+            )}
             <div className="col-md-4 d-grid align-items-end">
               <button className="btn btn-brand rounded-pill" disabled={busy}>
-                {busy ? '...' : 'ثبت'}
+                {busy ? '...' : editId ? 'ذخیره' : 'ثبت'}
               </button>
             </div>
           </form>
@@ -171,6 +267,7 @@ export default function Enrollments() {
                 <th>تاریخ</th>
                 <th>وضعیت</th>
                 <th>مالی</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -188,6 +285,14 @@ export default function Enrollments() {
                     <span className="chip chip-coral">
                       {financeMap[row.FinancialStatus] || row.FinancialStatus}
                     </span>
+                  </td>
+                  <td className="text-nowrap">
+                    <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEdit(row)}>
+                      ویرایش
+                    </button>
+                    <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => handleDelete(row)}>
+                      حذف
+                    </button>
                   </td>
                 </tr>
               ))}

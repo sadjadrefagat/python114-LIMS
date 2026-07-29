@@ -5,6 +5,37 @@ import { useAuth } from '../context/AuthContext'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
 
+const TEACHING_METHODS = [
+  { value: 'حضوری', label: 'حضوری' },
+  { value: 'آنلاین', label: 'آنلاین' },
+  { value: 'ترکیبی', label: 'ترکیبی (حضوری و آنلاین)' },
+  { value: 'مکالمه‌محور', label: 'مکالمه‌محور' },
+  { value: 'گرامرمحور', label: 'گرامرمحور' },
+  { value: 'مهارت‌محور', label: 'مهارت‌محور' },
+  { value: 'آزمون‌محور', label: 'آزمون‌محور' },
+  { value: 'فشرده', label: 'فشرده' },
+]
+
+const AGE_GROUPS = [
+  { value: 'کودک', label: 'کودک' },
+  { value: 'نوجوان', label: 'نوجوان' },
+  { value: 'جوان', label: 'جوان' },
+  { value: 'بزرگسال', label: 'بزرگسال' },
+  { value: 'همه سنین', label: 'همه سنین' },
+]
+
+const emptyForm = {
+  name: '',
+  language_ref: '',
+  level_ref: '',
+  sessions_count: '20',
+  cost: '',
+  description: '',
+  teaching_method: '',
+  age_group: '',
+  is_highlighted: '0',
+}
+
 export default function Courses() {
   const { hasRole } = useAuth()
   const canCreate = hasRole('admin', 'secretary')
@@ -18,17 +49,8 @@ export default function Courses() {
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({
-    name: '',
-    language_ref: '',
-    level_ref: '',
-    sessions_count: '20',
-    cost: '',
-    description: '',
-    teaching_method: '',
-    age_group: '',
-    is_highlighted: '0',
-  })
+  const [editId, setEditId] = useState(null)
+  const [form, setForm] = useState(emptyForm)
 
   useEffect(() => {
     api.get('/languages').then((d) => setLanguages(d.languages || [])).catch(() => {})
@@ -65,42 +87,84 @@ export default function Courses() {
     return () => clearTimeout(timer)
   }, [search, languageRef])
 
-  async function handleCreate(e) {
+  function resetForm() {
+    setEditId(null)
+    setForm(emptyForm)
+    setShowCreate(false)
+  }
+
+  function startEdit(course) {
+    setEditId(course.Id)
+    setForm({
+      name: course.Name || '',
+      language_ref: String(course.LanguageRef || ''),
+      level_ref: course.LevelRef ? String(course.LevelRef) : '',
+      sessions_count: String(course.SessionsCount ?? '20'),
+      cost: String(course.Cost ?? ''),
+      description: course.Description || '',
+      teaching_method: course.TeachingMethod || '',
+      age_group: course.AgeGroup || '',
+      is_highlighted: course.IsHighlighted ? '1' : '0',
+    })
+    setShowCreate(true)
+    setMessage('')
+    setError('')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  async function reloadList() {
+    const params = new URLSearchParams()
+    if (search.trim()) params.set('search', search.trim())
+    if (languageRef) params.set('language_ref', languageRef)
+    const q = params.toString()
+    const data = await api.get(`/courses${q ? `?${q}` : ''}`)
+    setCourses(data.courses || [])
+  }
+
+  async function handleSubmit(e) {
     e.preventDefault()
     setBusy(true)
     setError('')
     setMessage('')
     try {
-      await api.post('/courses', {
+      const payload = {
         name: form.name.trim(),
         language_ref: Number(form.language_ref),
         level_ref: form.level_ref ? Number(form.level_ref) : null,
         sessions_count: Number(form.sessions_count),
         cost: Number(form.cost),
         description: form.description.trim(),
-        teaching_method: form.teaching_method || null,
-        age_group: form.age_group || null,
+        teaching_method: form.teaching_method,
+        age_group: form.age_group,
         is_highlighted: form.is_highlighted === '1',
-      })
-      setMessage('دوره ثبت شد')
-      setShowCreate(false)
-      setForm({
-        name: '',
-        language_ref: '',
-        level_ref: '',
-        sessions_count: '20',
-        cost: '',
-        description: '',
-        teaching_method: '',
-        age_group: '',
-        is_highlighted: '0',
-      })
-      const data = await api.get('/courses')
-      setCourses(data.courses || [])
+      }
+      if (editId) {
+        await api.put(`/courses/${editId}`, payload)
+        setMessage('دوره ویرایش شد')
+      } else {
+        await api.post('/courses', payload)
+        setMessage('دوره ثبت شد')
+      }
+      resetForm()
+      await reloadList()
     } catch (err) {
       setError(err.message)
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function handleDelete(course) {
+    if (!window.confirm(`حذف دوره «${course.Name}»؟`)) return
+    setError('')
+    setMessage('')
+    try {
+      await api.delete(`/courses/${course.Id}`)
+      setMessage('دوره آرشیو شد')
+      if (editId === course.Id) resetForm()
+      await reloadList()
+    } catch (err) {
+      setError(err.message)
     }
   }
 
@@ -111,14 +175,29 @@ export default function Courses() {
           <h1 className="section-title h3 mb-1">کاتالوگ دوره‌ها</h1>
           <p className="muted mb-0">جستجو و ثبت دوره</p>
         </div>
-        <button className="btn btn-brand rounded-pill" onClick={() => setShowCreate((v) => !v)}>
-          {showCreate ? 'بستن فرم' : 'ثبت دوره جدید'}
-        </button>
+        {canCreate && (
+          <button
+            className="btn btn-brand rounded-pill"
+            onClick={() => (showCreate ? resetForm() : setShowCreate(true))}
+          >
+            {showCreate ? 'بستن فرم' : 'ثبت دوره جدید'}
+          </button>
+        )}
       </div>
 
-      {showCreate && (
+      {canCreate && showCreate && (
         <div className="create-panel">
-          <form className="row g-2" onSubmit={handleCreate}>
+          <div className="d-flex justify-content-between align-items-center mb-2">
+            <h2 className="h6 fw-bold mb-0">
+              {editId ? `ویرایش دوره #${editId}` : 'ثبت دوره جدید'}
+            </h2>
+            {editId && (
+              <button type="button" className="btn btn-sm btn-outline-secondary rounded-pill" onClick={resetForm}>
+                انصراف
+              </button>
+            )}
+          </div>
+          <form className="row g-2" onSubmit={handleSubmit}>
             <div className="col-md-6">
               <label className="form-label">نام دوره</label>
               <input
@@ -173,18 +252,22 @@ export default function Courses() {
             </div>
             <div className="col-md-3">
               <label className="form-label">روش تدریس</label>
-              <input
-                className="form-control"
+              <VazirSelect
+                required
                 value={form.teaching_method}
-                onChange={(e) => setForm((p) => ({ ...p, teaching_method: e.target.value }))}
+                onChange={(v) => setForm((p) => ({ ...p, teaching_method: v }))}
+                placeholder="انتخاب کنید"
+                options={TEACHING_METHODS}
               />
             </div>
             <div className="col-md-3">
               <label className="form-label">رده سنی</label>
-              <input
-                className="form-control"
+              <VazirSelect
+                required
                 value={form.age_group}
-                onChange={(e) => setForm((p) => ({ ...p, age_group: e.target.value }))}
+                onChange={(v) => setForm((p) => ({ ...p, age_group: v }))}
+                placeholder="انتخاب کنید"
+                options={AGE_GROUPS}
               />
             </div>
             <div className="col-md-9">
@@ -210,7 +293,7 @@ export default function Courses() {
             </div>
             <div className="col-12">
               <button className="btn btn-brand rounded-pill px-4" disabled={busy}>
-                {busy ? '...' : 'ثبت دوره'}
+                {busy ? '...' : editId ? 'ذخیره' : 'ثبت دوره'}
               </button>
             </div>
           </form>
@@ -259,11 +342,34 @@ export default function Courses() {
                   {course.SessionsCount} جلسه
                   {course.AgeGroup ? ` · ${course.AgeGroup}` : ''}
                 </p>
-                <div className="d-flex justify-content-between align-items-center mt-3">
+                <div className="d-flex justify-content-between align-items-center mt-3 gap-2">
                   <strong className="text-success">{formatMoney(course.Cost)}</strong>
-                  <Link to={`/courses/${course.Id}`} className="btn btn-sm btn-brand rounded-pill">
-                    جزئیات
-                  </Link>
+                  <div className="d-flex flex-wrap gap-1">
+                    <Link to={`/courses/${course.Id}`} className="btn btn-sm btn-outline-success rounded-pill">
+                      جزئیات
+                    </Link>
+                    <Link to={`/courses/${course.Id}#enroll`} className="btn btn-sm btn-brand rounded-pill">
+                      ثبت‌نام
+                    </Link>
+                    {canCreate && (
+                      <>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-secondary rounded-pill"
+                          onClick={() => startEdit(course)}
+                        >
+                          ویرایش
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-danger rounded-pill"
+                          onClick={() => handleDelete(course)}
+                        >
+                          حذف
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

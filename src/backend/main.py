@@ -4,11 +4,15 @@ API بک‌اند سیستم مدیریت آموزشگاه زبان (LIMS)
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+import pyodbc
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from auth import (
     create_access_token,
@@ -19,6 +23,7 @@ from auth import (
     get_user_by_username,
     get_user_roles,
     hash_password,
+    is_admin_user,
     public_user,
     register_failed_login,
     require_roles,
@@ -26,6 +31,7 @@ from auth import (
     revoke_all_user_sessions,
     revoke_refresh_token,
     store_refresh_token,
+    unlock_admin_accounts,
     verify_password,
 )
 from config import settings
@@ -33,6 +39,8 @@ from database import execute, execute_returning_id, fetch_all, fetch_one, health
 from models import (
     AttendanceBulkCreate,
     AttendanceCreate,
+    BranchCreate,
+    BranchUpdate,
     ChangePasswordRequest,
     ClassCreate,
     ClassUpdate,
@@ -41,7 +49,9 @@ from models import (
     EnrollmentCreate,
     EnrollmentUpdate,
     LanguageCreate,
+    LanguageUpdate,
     LevelCreate,
+    LevelUpdate,
     LoginRequest,
     PaymentCreate,
     RefreshRequest,
@@ -50,7 +60,10 @@ from models import (
     SessionCreate,
     SessionUpdate,
     StudentCreate,
+    StudentUpdate,
     TeacherCreate,
+    TeacherUpdate,
+    format_validation_errors,
 )
 
 app = FastAPI(
@@ -66,6 +79,48 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(pyodbc.IntegrityError)
+async def integrity_error_handler(_request: Request, exc: pyodbc.IntegrityError):
+    """تبدیل خطاهای CHECK/UNIQUE دیتابیس به پیام قابل‌فهم برای کاربر"""
+    msg = str(exc)
+    if "کد ملی" in msg:
+        return JSONResponse(status_code=400, content={"detail": "کد ملی نامعتبر یا تکراری است"})
+    if "جنسیت" in msg:
+        return JSONResponse(status_code=400, content={"detail": "جنسیت نامعتبر است"})
+    if "UNIQUE" in msg.upper() or "duplicate" in msg.lower():
+        return JSONResponse(status_code=400, content={"detail": "مقدار تکراری است"})
+    return JSONResponse(status_code=400, content={"detail": "داده با محدودیت‌های دیتابیس سازگار نیست"})
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(_request: Request, exc: RequestValidationError):
+    """همه خطاهای Validation به‌صورت فارسی برگردانده می‌شوند"""
+    formatted = format_validation_errors(exc.errors())
+    # برای سازگاری با کلاینت: هم آرایه و هم پیام یکپارچه
+    messages = [item["msg"] for item in formatted]
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": formatted,
+            "message": "، ".join(messages) if messages else "داده ارسالی نامعتبر است",
+        },
+    )
+
+
+@app.exception_handler(ValidationError)
+async def pydantic_validation_handler(_request: Request, exc: ValidationError):
+    formatted = format_validation_errors(exc.errors())
+    messages = [item["msg"] for item in formatted]
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": formatted,
+            "message": "، ".join(messages) if messages else "داده ارسالی نامعتبر است",
+        },
+    )
+
 
 # نقش‌های پرکاربرد
 StaffDep = Depends(require_roles("admin", "secretary"))
@@ -88,6 +143,73 @@ def _bad_request(detail: str) -> HTTPException:
 
 def _ok_list(key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {key: rows, "count": len(rows)}
+
+
+def _partial_update(table: str, id_value: int, column_map: dict[str, str], data: dict[str, Any]) -> None:
+    fields: list[str] = []
+    params: list[Any] = []
+    for key, col in column_map.items():
+        if key in data and data[key] is not None:
+            fields.append(f"[{col}] = ?")
+            params.append(data[key])
+    if not fields:
+        raise _bad_request("هیچ فیلدی برای به‌روزرسانی ارسال نشده است")
+    params.append(id_value)
+    execute(f"UPDATE [{table}] SET {', '.join(fields)} WHERE Id = ?", tuple(params))
+
+
+def _gregorian_to_jalali(gy: int, gm: int, gd: int) -> tuple[int, int, int]:
+    """تبدیل میلادی به شمسی برای مقایسه تاریخ‌های YYYY/MM/DD"""
+    gdm = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
+    gy2 = gy + 1 if gm > 2 else gy
+    days = (
+        355666
+        + 365 * gy
+        + (gy2 + 3) // 4
+        - (gy2 + 99) // 100
+        + (gy2 + 399) // 400
+        + gd
+        + gdm[gm - 1]
+    )
+    jy = -1595 + 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jm = 1 + days // 31
+        jd = 1 + days % 31
+    else:
+        jm = 7 + (days - 186) // 30
+        jd = 1 + (days - 186) % 30
+    return jy, jm, jd
+
+
+def _today_jalali() -> str:
+    t = date.today()
+    jy, jm, jd = _gregorian_to_jalali(t.year, t.month, t.day)
+    return f"{jy}/{jm:02d}/{jd:02d}"
+
+
+def _normalize_jalali_date(value: str) -> str:
+    parts = value.strip().split("/")
+    if len(parts) != 3:
+        raise _bad_request("فرمت تاریخ باید YYYY/MM/DD باشد")
+    try:
+        jy, jm, jd = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError as exc:
+        raise _bad_request("فرمت تاریخ نامعتبر است") from exc
+    return f"{jy}/{jm:02d}/{jd:02d}"
+
+
+def _reject_past_jalali_date(value: str, *, entity: str = "جلسه") -> str:
+    """BR-021 — ثبت با تاریخ گذشته ممنوع است"""
+    normalized = _normalize_jalali_date(value)
+    if normalized < _today_jalali():
+        raise _bad_request(f"ثبت {entity} با تاریخ گذشته مجاز نیست (BR-021)")
+    return normalized
 
 
 def _issue_tokens(user: dict[str, Any]) -> dict[str, Any]:
@@ -131,16 +253,27 @@ async def login(body: LoginRequest):
     if not user:
         raise HTTPException(status_code=401, detail="نام کاربری یا رمز عبور اشتباه است")
 
+    admin = is_admin_user(user)
+
+    # ادمین هرگز قفل نمی‌شود؛ اگر قبلاً قفل شده بود، فوراً باز می‌شود
+    if admin and (user.get("LockedUntil") or user.get("FailedLoginCount")):
+        unlock_admin_accounts()
+        user = get_user_by_username(body.username) or user
+
     locked_until = user.get("LockedUntil")
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    if locked_until and locked_until > now:
+    if not admin and locked_until and locked_until > now:
         raise HTTPException(status_code=423, detail="حساب موقتاً قفل است؛ بعداً تلاش کنید")
 
     if not user.get("IsActive"):
         raise HTTPException(status_code=403, detail="حساب کاربری غیرفعال است")
 
     if not verify_password(body.password, user["PasswordHash"]):
-        register_failed_login(user["Id"], int(user.get("FailedLoginCount") or 0))
+        register_failed_login(
+            user["Id"],
+            int(user.get("FailedLoginCount") or 0),
+            is_admin=admin,
+        )
         raise HTTPException(status_code=401, detail="نام کاربری یا رمز عبور اشتباه است")
 
     reset_failed_login(user["Id"])
@@ -163,24 +296,30 @@ async def register(body: RegisterRequest):
         raise HTTPException(status_code=500, detail="نقش student تعریف نشده است")
 
     full_name = f"{body.first_name} {body.last_name}".strip()
-    student_id = execute_returning_id(
-        """INSERT INTO Student
-            ([FirstName], [LastName], [FatherName], [NationalCode], [Gender],
-             [BirthDate], [Mobile], [Email], [TargetLanguageRef], [PreferredUILanguage])
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            body.first_name,
-            body.last_name,
-            body.father_name,
-            body.national_code,
-            body.gender,
-            body.birth_date,
-            body.mobile,
-            body.email,
-            body.target_language_ref,
-            body.preferred_ui_language,
-        ),
-    )
+    try:
+        student_id = execute_returning_id(
+            """INSERT INTO Student
+                ([FirstName], [LastName], [FatherName], [NationalCode], [Gender],
+                 [BirthDate], [Mobile], [Email], [TargetLanguageRef], [PreferredUILanguage])
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                body.first_name,
+                body.last_name,
+                body.father_name,
+                body.national_code,
+                body.gender,
+                body.birth_date,
+                body.mobile,
+                body.email,
+                body.target_language_ref,
+                body.preferred_ui_language,
+            ),
+        )
+    except pyodbc.IntegrityError as exc:
+        msg = str(exc)
+        if "کد ملی" in msg or "NationalCode" in msg:
+            raise _bad_request("کد ملی نامعتبر است") from exc
+        raise _bad_request("ثبت‌نام با محدودیت‌های دیتابیس سازگار نیست") from exc
 
     user_id = execute_returning_id(
         """INSERT INTO AppUser
@@ -292,6 +431,29 @@ async def create_language(body: LanguageCreate, user: dict = StaffDep):
     return {"message": "Language created", "id": new_id}
 
 
+@app.put("/languages/{language_id}")
+async def update_language(language_id: int, body: LanguageUpdate, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM Language WHERE Id = ?", (language_id,)):
+        raise _not_found("Language")
+    dup = fetch_one("SELECT Id FROM Language WHERE Name = ? AND Id <> ?", (body.name, language_id))
+    if dup:
+        raise _bad_request("نام زبان تکراری است")
+    execute("UPDATE Language SET Name = ? WHERE Id = ?", (body.name, language_id))
+    return {"message": "Language updated", "id": language_id}
+
+
+@app.delete("/languages/{language_id}")
+async def delete_language(language_id: int, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM Language WHERE Id = ?", (language_id,)):
+        raise _not_found("Language")
+    if fetch_one("SELECT TOP 1 Id FROM Course WHERE LanguageRef = ?", (language_id,)):
+        raise _bad_request("این زبان در دوره استفاده شده و قابل حذف نیست")
+    if fetch_one("SELECT TOP 1 Id FROM Level WHERE LanguageRef = ?", (language_id,)):
+        raise _bad_request("این زبان سطح فعال دارد و قابل حذف نیست")
+    execute("DELETE FROM Language WHERE Id = ?", (language_id,))
+    return {"message": "Language deleted", "id": language_id}
+
+
 # ---------------------------------------------------------------------------
 # Levels
 # ---------------------------------------------------------------------------
@@ -335,13 +497,57 @@ async def create_level(body: LevelCreate, user: dict = StaffDep):
     return {"message": "Level created", "id": new_id}
 
 
+@app.put("/levels/{level_id}")
+async def update_level(level_id: int, body: LevelUpdate, user: dict = StaffDep):
+    current = fetch_one("SELECT * FROM Level WHERE Id = ? AND IsActive = 1", (level_id,))
+    if not current:
+        raise _not_found("Level")
+    data = body.model_dump(exclude_unset=True)
+    language_ref = data.get("language_ref", current["LanguageRef"])
+    code = data.get("code", current["Code"])
+    if "language_ref" in data and not fetch_one("SELECT Id FROM Language WHERE Id = ?", (language_ref,)):
+        raise _bad_request("زبان معتبر نیست")
+    dup = fetch_one(
+        "SELECT Id FROM Level WHERE LanguageRef = ? AND Code = ? AND Id <> ? AND IsActive = 1",
+        (language_ref, code, level_id),
+    )
+    if dup:
+        raise _bad_request("کد سطح در این زبان تکراری است")
+    _partial_update(
+        "Level",
+        level_id,
+        {
+            "language_ref": "LanguageRef",
+            "code": "Code",
+            "name": "Name",
+            "sort_order": "SortOrder",
+        },
+        data,
+    )
+    return {"message": "Level updated", "id": level_id}
+
+
+@app.delete("/levels/{level_id}")
+async def archive_level(level_id: int, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM Level WHERE Id = ?", (level_id,)):
+        raise _not_found("Level")
+    execute("UPDATE Level SET IsActive = 0 WHERE Id = ?", (level_id,))
+    return {"message": "Level archived (soft delete)", "id": level_id}
+
+
 # ---------------------------------------------------------------------------
 # Session Types
 # ---------------------------------------------------------------------------
 
 @app.get("/session-types")
-async def list_session_types():
-    rows = fetch_all("SELECT Id, Name FROM SessionType ORDER BY Id")
+async def list_session_types(search: Optional[str] = None):
+    if search:
+        rows = fetch_all(
+            "SELECT Id, Name FROM SessionType WHERE Name LIKE ? ORDER BY Id",
+            (f"%{search}%",),
+        )
+    else:
+        rows = fetch_all("SELECT Id, Name FROM SessionType ORDER BY Id")
     return _ok_list("session_types", rows)
 
 
@@ -357,32 +563,82 @@ async def create_session_type(body: LanguageCreate, user: dict = StaffDep):
     return {"message": "Session type created", "id": new_id}
 
 
+@app.put("/session-types/{session_type_id}")
+async def update_session_type(session_type_id: int, body: LanguageUpdate, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM SessionType WHERE Id = ?", (session_type_id,)):
+        raise _not_found("SessionType")
+    dup = fetch_one("SELECT Id FROM SessionType WHERE Name = ? AND Id <> ?", (body.name, session_type_id))
+    if dup:
+        raise _bad_request("نام نوع جلسه تکراری است")
+    execute("UPDATE SessionType SET Name = ? WHERE Id = ?", (body.name, session_type_id))
+    return {"message": "Session type updated", "id": session_type_id}
+
+
+@app.delete("/session-types/{session_type_id}")
+async def delete_session_type(session_type_id: int, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM SessionType WHERE Id = ?", (session_type_id,)):
+        raise _not_found("SessionType")
+    if fetch_one("SELECT TOP 1 Id FROM Class WHERE SessionTypeRef = ?", (session_type_id,)):
+        raise _bad_request("این نوع جلسه در کلاس استفاده شده و قابل حذف نیست")
+    if fetch_one("SELECT TOP 1 Id FROM Session WHERE SessionTypeRef = ?", (session_type_id,)):
+        raise _bad_request("این نوع جلسه در جلسات استفاده شده و قابل حذف نیست")
+    execute("DELETE FROM SessionType WHERE Id = ?", (session_type_id,))
+    return {"message": "Session type deleted", "id": session_type_id}
+
+
 # ---------------------------------------------------------------------------
 # Branches
 # ---------------------------------------------------------------------------
 
 @app.get("/branches")
-async def list_branches():
-    rows = fetch_all(
-        """SELECT Id, Name, Address, Phone, IsActive
-           FROM Branch WHERE IsActive = 1 ORDER BY Name"""
-    )
-    return _ok_list("branches", rows)
+async def list_branches(search: Optional[str] = None):
+    query = """SELECT Id, Name, Address, Phone, IsActive
+               FROM Branch WHERE IsActive = 1"""
+    params: list[Any] = []
+    if search:
+        query += " AND (Name LIKE ? OR Address LIKE ? OR Phone LIKE ?)"
+        like = f"%{search}%"
+        params.extend([like, like, like])
+    query += " ORDER BY Name"
+    return _ok_list("branches", fetch_all(query, tuple(params)))
 
 
 @app.post("/branches", status_code=201)
-async def create_branch(body: dict, user: dict = StaffDep):
-    name = (body.get("name") or "").strip()
-    if not name:
-        raise _bad_request("نام شعبه الزامی است")
-    if fetch_one("SELECT Id FROM Branch WHERE Name = ?", (name,)):
+async def create_branch(body: BranchCreate, user: dict = StaffDep):
+    if fetch_one("SELECT Id FROM Branch WHERE Name = ?", (body.name,)):
         raise _bad_request("نام شعبه تکراری است")
     new_id = execute_returning_id(
         """INSERT INTO Branch ([Name], [Address], [Phone])
            VALUES (?, ?, ?)""",
-        (name, body.get("address"), body.get("phone")),
+        (body.name, body.address, body.phone),
     )
     return {"message": "Branch created", "id": new_id}
+
+
+@app.put("/branches/{branch_id}")
+async def update_branch(branch_id: int, body: BranchUpdate, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM Branch WHERE Id = ? AND IsActive = 1", (branch_id,)):
+        raise _not_found("Branch")
+    data = body.model_dump(exclude_unset=True)
+    if "name" in data:
+        dup = fetch_one("SELECT Id FROM Branch WHERE Name = ? AND Id <> ?", (data["name"], branch_id))
+        if dup:
+            raise _bad_request("نام شعبه تکراری است")
+    _partial_update(
+        "Branch",
+        branch_id,
+        {"name": "Name", "address": "Address", "phone": "Phone"},
+        data,
+    )
+    return {"message": "Branch updated", "id": branch_id}
+
+
+@app.delete("/branches/{branch_id}")
+async def archive_branch(branch_id: int, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM Branch WHERE Id = ?", (branch_id,)):
+        raise _not_found("Branch")
+    execute("UPDATE Branch SET IsActive = 0 WHERE Id = ?", (branch_id,))
+    return {"message": "Branch archived (soft delete)", "id": branch_id}
 
 
 # ---------------------------------------------------------------------------
@@ -600,25 +856,71 @@ async def get_teacher(teacher_id: int, user: dict = AuthDep):
 async def create_teacher(body: TeacherCreate, user: dict = StaffDep):
     if fetch_one("SELECT Id FROM Teacher WHERE NationalCode = ?", (body.national_code,)):
         raise _bad_request("کد ملی مدرس تکراری است")
-    new_id = execute_returning_id(
-        """INSERT INTO Teacher
-            ([FirstName], [LastName], [FatherName], [NationalCode], [Gender],
-             [BirthDate], [Mobile], [Email], [Specialty], [Bio])
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            body.first_name,
-            body.last_name,
-            body.father_name,
-            body.national_code,
-            body.gender,
-            body.birth_date,
-            body.mobile,
-            body.email,
-            body.specialty,
-            body.bio,
-        ),
-    )
+    try:
+        new_id = execute_returning_id(
+            """INSERT INTO Teacher
+                ([FirstName], [LastName], [FatherName], [NationalCode], [Gender],
+                 [BirthDate], [Mobile], [Email], [Specialty], [Bio])
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                body.first_name,
+                body.last_name,
+                body.father_name,
+                body.national_code,
+                body.gender,
+                body.birth_date,
+                body.mobile,
+                body.email,
+                body.specialty,
+                body.bio,
+            ),
+        )
+    except pyodbc.IntegrityError as exc:
+        msg = str(exc)
+        if "کد ملی" in msg or "NationalCode" in msg:
+            raise _bad_request("کد ملی نامعتبر است") from exc
+        raise _bad_request("ثبت مدرس با محدودیت‌های دیتابیس سازگار نیست") from exc
     return {"message": "Teacher created", "id": new_id}
+
+
+@app.put("/teachers/{teacher_id}")
+async def update_teacher(teacher_id: int, body: TeacherUpdate, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM Teacher WHERE Id = ?", (teacher_id,)):
+        raise _not_found("Teacher")
+    data = body.model_dump(exclude_unset=True)
+    if "national_code" in data and data["national_code"]:
+        dup = fetch_one(
+            "SELECT Id FROM Teacher WHERE NationalCode = ? AND Id <> ?",
+            (data["national_code"], teacher_id),
+        )
+        if dup:
+            raise _bad_request("کد ملی مدرس تکراری است")
+    if "is_makeup" in data:
+        pass
+    try:
+        _partial_update(
+            "Teacher",
+            teacher_id,
+            {
+                "first_name": "FirstName",
+                "last_name": "LastName",
+                "father_name": "FatherName",
+                "national_code": "NationalCode",
+                "gender": "Gender",
+                "birth_date": "BirthDate",
+                "mobile": "Mobile",
+                "email": "Email",
+                "specialty": "Specialty",
+                "bio": "Bio",
+            },
+            data,
+        )
+    except pyodbc.IntegrityError as exc:
+        msg = str(exc)
+        if "کد ملی" in msg or "NationalCode" in msg:
+            raise _bad_request("کد ملی نامعتبر است") from exc
+        raise _bad_request("ویرایش مدرس با محدودیت‌های دیتابیس سازگار نیست") from exc
+    return {"message": "Teacher updated", "id": teacher_id}
 
 
 @app.delete("/teachers/{teacher_id}")
@@ -680,28 +982,84 @@ async def create_student(body: StudentCreate, user: dict = StaffDep):
         raise _bad_request("شماره تماس الزامی است (BR-009)")
     if fetch_one("SELECT Id FROM Student WHERE NationalCode = ?", (body.national_code,)):
         raise _bad_request("کد ملی دانشجو تکراری است")
-    new_id = execute_returning_id(
-        """INSERT INTO Student
-            ([FirstName], [LastName], [FatherName], [NationalCode], [Gender],
-             [BirthDate], [Mobile], [Email], [TargetLanguageRef], [CurrentLevelRef],
-             [PreferredUILanguage], [NotificationsEnabled])
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            body.first_name,
-            body.last_name,
-            body.father_name,
-            body.national_code,
-            body.gender,
-            body.birth_date,
-            body.mobile,
-            body.email,
-            body.target_language_ref,
-            body.current_level_ref,
-            body.preferred_ui_language,
-            1 if body.notifications_enabled else 0,
-        ),
-    )
+    try:
+        new_id = execute_returning_id(
+            """INSERT INTO Student
+                ([FirstName], [LastName], [FatherName], [NationalCode], [Gender],
+                 [BirthDate], [Mobile], [Email], [TargetLanguageRef], [CurrentLevelRef],
+                 [PreferredUILanguage], [NotificationsEnabled])
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                body.first_name,
+                body.last_name,
+                body.father_name,
+                body.national_code,
+                body.gender,
+                body.birth_date,
+                body.mobile,
+                body.email,
+                body.target_language_ref,
+                body.current_level_ref,
+                body.preferred_ui_language,
+                1 if body.notifications_enabled else 0,
+            ),
+        )
+    except pyodbc.IntegrityError as exc:
+        msg = str(exc)
+        if "کد ملی" in msg or "NationalCode" in msg:
+            raise _bad_request("کد ملی نامعتبر است") from exc
+        raise _bad_request("ثبت دانشجو با محدودیت‌های دیتابیس سازگار نیست") from exc
     return {"message": "Student created", "id": new_id}
+
+
+@app.put("/students/{student_id}")
+async def update_student(student_id: int, body: StudentUpdate, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM Student WHERE Id = ?", (student_id,)):
+        raise _not_found("Student")
+    data = body.model_dump(exclude_unset=True)
+    if "national_code" in data and data["national_code"]:
+        dup = fetch_one(
+            "SELECT Id FROM Student WHERE NationalCode = ? AND Id <> ?",
+            (data["national_code"], student_id),
+        )
+        if dup:
+            raise _bad_request("کد ملی دانشجو تکراری است")
+    if "notifications_enabled" in data and data["notifications_enabled"] is not None:
+        data["notifications_enabled"] = 1 if data["notifications_enabled"] else 0
+    try:
+        _partial_update(
+            "Student",
+            student_id,
+            {
+                "first_name": "FirstName",
+                "last_name": "LastName",
+                "father_name": "FatherName",
+                "national_code": "NationalCode",
+                "gender": "Gender",
+                "birth_date": "BirthDate",
+                "mobile": "Mobile",
+                "email": "Email",
+                "target_language_ref": "TargetLanguageRef",
+                "current_level_ref": "CurrentLevelRef",
+                "preferred_ui_language": "PreferredUILanguage",
+                "notifications_enabled": "NotificationsEnabled",
+            },
+            data,
+        )
+    except pyodbc.IntegrityError as exc:
+        msg = str(exc)
+        if "کد ملی" in msg or "NationalCode" in msg:
+            raise _bad_request("کد ملی نامعتبر است") from exc
+        raise _bad_request("ویرایش دانشجو با محدودیت‌های دیتابیس سازگار نیست") from exc
+    return {"message": "Student updated", "id": student_id}
+
+
+@app.delete("/students/{student_id}")
+async def archive_student(student_id: int, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM Student WHERE Id = ?", (student_id,)):
+        raise _not_found("Student")
+    execute("UPDATE Student SET IsActive = 0 WHERE Id = ?", (student_id,))
+    return {"message": "Student archived (soft delete)", "id": student_id}
 
 
 # ---------------------------------------------------------------------------
@@ -779,6 +1137,11 @@ async def create_class(body: ClassCreate, user: dict = StaffDep):
         raise _bad_request("مدرس معتبر/فعال نیست (BR-004 / BR-008)")
     _validate_class_location(body.session_type_ref, body.location_address, body.meeting_link)
 
+    start_date = _normalize_jalali_date(body.start_date)
+    end_date = _normalize_jalali_date(body.end_date)
+    if end_date < start_date:
+        raise _bad_request("تاریخ پایان کلاس نباید قبل از تاریخ شروع باشد")
+
     new_id = execute_returning_id(
         """INSERT INTO Class
             ([CourseRef], [TeacherRef], [SessionTypeRef], [StartDate], [EndDate],
@@ -788,8 +1151,8 @@ async def create_class(body: ClassCreate, user: dict = StaffDep):
             body.course_ref,
             body.teacher_ref,
             body.session_type_ref,
-            body.start_date,
-            body.end_date,
+            start_date,
+            end_date,
             body.capacity,
             body.status,
             body.class_type,
@@ -825,6 +1188,19 @@ async def update_class(class_id: int, body: ClassUpdate, user: dict = StaffDep):
         "meeting_link": "MeetingLink",
     }
     data = body.model_dump(exclude_unset=True)
+    if "start_date" in data and data["start_date"]:
+        data["start_date"] = _normalize_jalali_date(data["start_date"])
+    if "end_date" in data and data["end_date"]:
+        data["end_date"] = _normalize_jalali_date(data["end_date"])
+
+    start_date = data.get("start_date", current.get("StartDate"))
+    end_date = data.get("end_date", current.get("EndDate"))
+    if start_date and end_date:
+        start_n = _normalize_jalali_date(str(start_date))
+        end_n = _normalize_jalali_date(str(end_date))
+        if end_n < start_n:
+            raise _bad_request("تاریخ پایان کلاس نباید قبل از تاریخ شروع باشد")
+
     for key, col in column_map.items():
         if key in data:
             fields.append(f"[{col}] = ?")
@@ -834,6 +1210,18 @@ async def update_class(class_id: int, body: ClassUpdate, user: dict = StaffDep):
     params.append(class_id)
     execute(f"UPDATE Class SET {', '.join(fields)} WHERE Id = ?", tuple(params))
     return {"message": "Class updated", "id": class_id}
+
+
+@app.delete("/classes/{class_id}")
+async def cancel_class(class_id: int, user: dict = StaffDep):
+    """حذف منطقی کلاس = لغو"""
+    if not fetch_one("SELECT Id FROM Class WHERE Id = ?", (class_id,)):
+        raise _not_found("Class")
+    execute(
+        "UPDATE Class SET Status = N'cancelled', CancelReason = N'حذف توسط کاربر' WHERE Id = ?",
+        (class_id,),
+    )
+    return {"message": "Class cancelled", "id": class_id}
 
 
 # ---------------------------------------------------------------------------
@@ -860,6 +1248,7 @@ SESSION_SELECT = """
 async def list_sessions(
     class_ref: Optional[int] = None,
     status: Optional[str] = None,
+    search: Optional[str] = None,
     from_date: Optional[str] = Query(None, pattern=r"^\d{4}/\d{2}/\d{2}$"),
     to_date: Optional[str] = Query(None, pattern=r"^\d{4}/\d{2}/\d{2}$"),
 ):
@@ -871,6 +1260,10 @@ async def list_sessions(
     if status:
         query += " AND S.Status = ?"
         params.append(status)
+    if search:
+        query += " AND (C.Name LIKE ? OR CAST(S.Id AS NVARCHAR(20)) LIKE ? OR S.Date LIKE ?)"
+        like = f"%{search}%"
+        params.extend([like, like, like])
     if from_date:
         query += " AND S.Date >= ?"
         params.append(from_date)
@@ -899,6 +1292,8 @@ async def create_session(body: SessionCreate, user: dict = StaffDep):
     if body.start_time >= body.end_time:
         raise _bad_request("ساعت پایان باید بعد از شروع باشد")
 
+    session_date = _reject_past_jalali_date(body.date, entity="جلسه")
+
     # تداخل زمانی مدرس کلاس (BR-020)
     overlap = fetch_one(
         """SELECT S.Id
@@ -908,7 +1303,7 @@ async def create_session(body: SessionCreate, user: dict = StaffDep):
              AND S.Date = ?
              AND S.Status NOT IN ('cancelled')
              AND S.StartTime < ? AND S.EndTime > ?""",
-        (body.class_ref, body.date, body.end_time, body.start_time),
+        (body.class_ref, session_date, body.end_time, body.start_time),
     )
     if overlap:
         raise _bad_request("تداخل زمانی با جلسه دیگر مدرس وجود دارد (BR-020)")
@@ -923,7 +1318,7 @@ async def create_session(body: SessionCreate, user: dict = StaffDep):
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             body.class_ref,
-            body.date,
+            session_date,
             body.start_time,
             body.end_time,
             body.session_type_ref,
@@ -939,7 +1334,8 @@ async def create_session(body: SessionCreate, user: dict = StaffDep):
 
 @app.put("/sessions/{session_id}")
 async def update_session(session_id: int, body: SessionUpdate, user: dict = StaffDep):
-    if not fetch_one("SELECT Id FROM Session WHERE Id = ?", (session_id,)):
+    existing = fetch_one("SELECT Id, Date FROM Session WHERE Id = ?", (session_id,))
+    if not existing:
         raise _not_found("Session")
     if body.status == "cancelled" and not body.cancel_reason:
         raise _bad_request("لغو جلسه بدون دلیل مجاز نیست (BR-024)")
@@ -960,6 +1356,16 @@ async def update_session(session_id: int, body: SessionUpdate, user: dict = Staf
         "notes": "Notes",
     }
     data = body.model_dump(exclude_unset=True)
+    if "date" in data and data["date"] is not None:
+        new_date = _normalize_jalali_date(data["date"])
+        existing_date = _normalize_jalali_date(str(existing["Date"]))
+        today = _today_jalali()
+        # تاریخ گذشته فقط اگر همان تاریخ قبلی باشد قابل نگه‌داشتن است؛ انتقال به گذشته ممنوع
+        if new_date < today and new_date != existing_date:
+            raise _bad_request("تغییر تاریخ جلسه به گذشته مجاز نیست (BR-021)")
+        data["date"] = new_date
+    if data.get("start_time") and data.get("end_time") and data["start_time"] >= data["end_time"]:
+        raise _bad_request("ساعت پایان باید بعد از شروع باشد")
     for key, col in column_map.items():
         if key in data:
             val = data[key]
@@ -972,6 +1378,18 @@ async def update_session(session_id: int, body: SessionUpdate, user: dict = Staf
     params.append(session_id)
     execute(f"UPDATE Session SET {', '.join(fields)} WHERE Id = ?", tuple(params))
     return {"message": "Session updated", "id": session_id}
+
+
+@app.delete("/sessions/{session_id}")
+async def cancel_session(session_id: int, user: dict = StaffDep):
+    """حذف منطقی جلسه = لغو"""
+    if not fetch_one("SELECT Id FROM Session WHERE Id = ?", (session_id,)):
+        raise _not_found("Session")
+    execute(
+        "UPDATE Session SET Status = N'cancelled', CancelReason = N'حذف توسط کاربر' WHERE Id = ?",
+        (session_id,),
+    )
+    return {"message": "Session cancelled", "id": session_id}
 
 
 # ---------------------------------------------------------------------------
@@ -1079,6 +1497,7 @@ async def list_enrollments(
     class_ref: Optional[int] = None,
     course_ref: Optional[int] = None,
     status: Optional[str] = None,
+    search: Optional[str] = None,
     user: dict = AuthDep,
 ):
     query = ENROLLMENT_SELECT + " WHERE 1=1"
@@ -1095,6 +1514,14 @@ async def list_enrollments(
     if status:
         query += " AND R.Status = ?"
         params.append(status)
+    if search:
+        query += """ AND (
+            St.FirstName + N' ' + St.LastName LIKE ?
+            OR C.Name LIKE ?
+            OR CAST(R.Id AS NVARCHAR(20)) LIKE ?
+        )"""
+        like = f"%{search}%"
+        params.extend([like, like, like])
     query += " ORDER BY R.Id DESC"
     return _ok_list("enrollments", fetch_all(query, tuple(params)))
 
@@ -1197,6 +1624,27 @@ async def update_enrollment(enrollment_id: int, body: EnrollmentUpdate, user: di
             (current["ClassRef"],),
         )
     return {"message": "Enrollment updated", "id": enrollment_id}
+
+
+@app.delete("/enrollments/{enrollment_id}")
+async def withdraw_enrollment(enrollment_id: int, user: dict = StaffDep):
+    """حذف منطقی ثبت‌نام = انصراف"""
+    current = fetch_one("SELECT * FROM Registration WHERE Id = ?", (enrollment_id,))
+    if not current:
+        raise _not_found("Enrollment")
+    execute(
+        """UPDATE Registration
+           SET Status = N'withdrawn', WithdrawReason = N'حذف توسط کاربر'
+           WHERE Id = ?""",
+        (enrollment_id,),
+    )
+    if current.get("ClassRef"):
+        execute(
+            """UPDATE Class SET Status = N'open'
+               WHERE Id = ? AND Status = N'full'""",
+            (current["ClassRef"],),
+        )
+    return {"message": "Enrollment withdrawn", "id": enrollment_id}
 
 
 # ---------------------------------------------------------------------------

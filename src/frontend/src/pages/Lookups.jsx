@@ -2,19 +2,30 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import Loading from '../components/Loading'
 
+const emptyBranch = { name: '', address: '', phone: '' }
+
 export default function Lookups() {
   const [sessionTypes, setSessionTypes] = useState([])
   const [branches, setBranches] = useState([])
+  const [stSearch, setStSearch] = useState('')
+  const [brSearch, setBrSearch] = useState('')
   const [stName, setStName] = useState('')
-  const [branch, setBranch] = useState({ name: '', address: '', phone: '' })
+  const [stEditId, setStEditId] = useState(null)
+  const [branch, setBranch] = useState(emptyBranch)
+  const [brEditId, setBrEditId] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
 
-  async function load() {
+  async function load(stQ = stSearch, brQ = brSearch) {
     setLoading(true)
     try {
-      const [st, br] = await Promise.all([api.get('/session-types'), api.get('/branches')])
+      const stQuery = stQ.trim() ? `?search=${encodeURIComponent(stQ.trim())}` : ''
+      const brQuery = brQ.trim() ? `?search=${encodeURIComponent(brQ.trim())}` : ''
+      const [st, br] = await Promise.all([
+        api.get(`/session-types${stQuery}`),
+        api.get(`/branches${brQuery}`),
+      ])
       setSessionTypes(st.session_types || [])
       setBranches(br.branches || [])
       setError('')
@@ -29,33 +40,107 @@ export default function Lookups() {
     load()
   }, [])
 
-  async function createSessionType(e) {
+  useEffect(() => {
+    const t = setTimeout(() => load(stSearch, brSearch), 250)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stSearch, brSearch])
+
+  function resetSessionType() {
+    setStEditId(null)
+    setStName('')
+  }
+
+  function startEditSessionType(row) {
+    setStEditId(row.Id)
+    setStName(row.Name || '')
+    setMessage('')
+    setError('')
+  }
+
+  async function submitSessionType(e) {
     e.preventDefault()
     setMessage('')
     setError('')
     try {
-      await api.post('/session-types', { name: stName.trim() })
-      setStName('')
-      setMessage('نوع جلسه ثبت شد')
-      await load()
+      const payload = { name: stName.trim() }
+      if (stEditId) {
+        await api.put(`/session-types/${stEditId}`, payload)
+        setMessage('نوع جلسه ویرایش شد')
+      } else {
+        await api.post('/session-types', payload)
+        setMessage('نوع جلسه ثبت شد')
+      }
+      resetSessionType()
+      await load(stSearch, brSearch)
     } catch (err) {
       setError(err.message)
     }
   }
 
-  async function createBranch(e) {
+  async function deleteSessionType(row) {
+    if (!window.confirm(`حذف نوع جلسه «${row.Name}»؟`)) return
+    setMessage('')
+    setError('')
+    try {
+      await api.delete(`/session-types/${row.Id}`)
+      setMessage('نوع جلسه حذف شد')
+      if (stEditId === row.Id) resetSessionType()
+      await load(stSearch, brSearch)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  function resetBranch() {
+    setBrEditId(null)
+    setBranch(emptyBranch)
+  }
+
+  function startEditBranch(row) {
+    setBrEditId(row.Id)
+    setBranch({
+      name: row.Name || '',
+      address: row.Address || '',
+      phone: row.Phone || '',
+    })
+    setMessage('')
+    setError('')
+  }
+
+  async function submitBranch(e) {
     e.preventDefault()
     setMessage('')
     setError('')
     try {
-      await api.post('/branches', {
+      const payload = {
         name: branch.name.trim(),
         address: branch.address.trim() || null,
         phone: branch.phone.trim() || null,
-      })
-      setBranch({ name: '', address: '', phone: '' })
-      setMessage('شعبه ثبت شد')
-      await load()
+      }
+      if (brEditId) {
+        await api.put(`/branches/${brEditId}`, payload)
+        setMessage('شعبه ویرایش شد')
+      } else {
+        await api.post('/branches', payload)
+        setMessage('شعبه ثبت شد')
+      }
+      resetBranch()
+      await load(stSearch, brSearch)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function deleteBranch(row) {
+    if (!window.confirm(`حذف شعبه «${row.Name}»؟`)) return
+    setMessage('')
+    setError('')
+    try {
+      await api.delete(`/branches/${row.Id}`)
+      setMessage('شعبه آرشیو شد')
+      if (brEditId === row.Id) resetBranch()
+      await load(stSearch, brSearch)
     } catch (err) {
       setError(err.message)
     }
@@ -74,8 +159,17 @@ export default function Lookups() {
       <div className="row g-3">
         <div className="col-lg-6">
           <div className="create-panel h-100">
-            <h2 className="h6 fw-bold mb-3">ثبت نوع جلسه</h2>
-            <form className="row g-2" onSubmit={createSessionType}>
+            <div className="d-flex justify-content-between align-items-center mb-3">
+              <h2 className="h6 fw-bold mb-0">
+                {stEditId ? `ویرایش نوع جلسه #${stEditId}` : 'ثبت نوع جلسه'}
+              </h2>
+              {stEditId && (
+                <button type="button" className="btn btn-sm btn-outline-secondary rounded-pill" onClick={resetSessionType}>
+                  انصراف
+                </button>
+              )}
+            </div>
+            <form className="row g-2" onSubmit={submitSessionType}>
               <div className="col-8">
                 <input
                   className="form-control"
@@ -86,26 +180,52 @@ export default function Lookups() {
                 />
               </div>
               <div className="col-4 d-grid">
-                <button className="btn btn-brand rounded-pill">ثبت</button>
+                <button className="btn btn-brand rounded-pill">{stEditId ? 'ذخیره' : 'ثبت'}</button>
               </div>
             </form>
+            <input
+              className="form-control mt-3"
+              placeholder="جستجوی نوع جلسه..."
+              value={stSearch}
+              onChange={(e) => setStSearch(e.target.value)}
+            />
             {loading ? (
               <Loading />
             ) : (
               <ul className="mt-3 mb-0 list-unstyled">
                 {sessionTypes.map((s) => (
-                  <li key={s.Id} className="py-1 border-bottom">
-                    {s.Id}. {s.Name}
+                  <li key={s.Id} className="py-1 border-bottom d-flex justify-content-between align-items-center">
+                    <span>
+                      {s.Id}. {s.Name}
+                    </span>
+                    <span className="text-nowrap">
+                      <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEditSessionType(s)}>
+                        ویرایش
+                      </button>
+                      <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => deleteSessionType(s)}>
+                        حذف
+                      </button>
+                    </span>
                   </li>
                 ))}
+                {!sessionTypes.length && <li className="py-2 muted">موردی یافت نشد</li>}
               </ul>
             )}
           </div>
         </div>
         <div className="col-lg-6">
           <div className="create-panel h-100">
-            <h2 className="h6 fw-bold mb-3">ثبت شعبه</h2>
-            <form className="row g-2" onSubmit={createBranch}>
+            <div className="d-flex justify-content-between align-items-center mb-3">
+              <h2 className="h6 fw-bold mb-0">
+                {brEditId ? `ویرایش شعبه #${brEditId}` : 'ثبت شعبه'}
+              </h2>
+              {brEditId && (
+                <button type="button" className="btn btn-sm btn-outline-secondary rounded-pill" onClick={resetBranch}>
+                  انصراف
+                </button>
+              )}
+            </div>
+            <form className="row g-2" onSubmit={submitBranch}>
               <div className="col-12">
                 <input
                   className="form-control"
@@ -132,19 +252,36 @@ export default function Lookups() {
                 />
               </div>
               <div className="col-12 d-grid">
-                <button className="btn btn-brand rounded-pill">ثبت شعبه</button>
+                <button className="btn btn-brand rounded-pill">{brEditId ? 'ذخیره' : 'ثبت شعبه'}</button>
               </div>
             </form>
+            <input
+              className="form-control mt-3"
+              placeholder="جستجوی شعبه..."
+              value={brSearch}
+              onChange={(e) => setBrSearch(e.target.value)}
+            />
             {loading ? (
               <Loading />
             ) : (
               <ul className="mt-3 mb-0 list-unstyled">
                 {branches.map((b) => (
-                  <li key={b.Id} className="py-1 border-bottom">
-                    <strong>{b.Name}</strong>
-                    {b.Address ? ` — ${b.Address}` : ''}
+                  <li key={b.Id} className="py-1 border-bottom d-flex justify-content-between align-items-center">
+                    <span>
+                      <strong>{b.Name}</strong>
+                      {b.Address ? ` — ${b.Address}` : ''}
+                    </span>
+                    <span className="text-nowrap">
+                      <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEditBranch(b)}>
+                        ویرایش
+                      </button>
+                      <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => deleteBranch(b)}>
+                        حذف
+                      </button>
+                    </span>
                   </li>
                 ))}
+                {!branches.length && <li className="py-2 muted">موردی یافت نشد</li>}
               </ul>
             )}
           </div>

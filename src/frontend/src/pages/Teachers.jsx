@@ -1,8 +1,21 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
-import JalaliDatePicker from '../components/JalaliDatePicker'
+import JalaliDatePicker, { todayJalaliString } from '../components/JalaliDatePicker'
+
+const emptyForm = {
+  first_name: '',
+  last_name: '',
+  father_name: '',
+  national_code: '',
+  gender: '2',
+  birth_date: '',
+  mobile: '',
+  email: '',
+  specialty: '',
+  bio: '',
+}
 
 export default function Teachers() {
   const [rows, setRows] = useState([])
@@ -12,18 +25,9 @@ export default function Teachers() {
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({
-    first_name: '',
-    last_name: '',
-    father_name: '',
-    national_code: '',
-    gender: '2',
-    birth_date: '',
-    mobile: '',
-    email: '',
-    specialty: '',
-    bio: '',
-  })
+  const [editId, setEditId] = useState(null)
+  const today = useMemo(() => todayJalaliString(), [])
+  const [form, setForm] = useState(emptyForm)
 
   async function load(q = search) {
     setLoading(true)
@@ -42,15 +46,42 @@ export default function Teachers() {
   useEffect(() => {
     const t = setTimeout(() => load(search), 250)
     return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search])
 
-  async function handleCreate(e) {
+  function resetForm() {
+    setEditId(null)
+    setForm(emptyForm)
+    setShowCreate(false)
+  }
+
+  function startEdit(row) {
+    setEditId(row.Id)
+    setForm({
+      first_name: row.FirstName || '',
+      last_name: row.LastName || '',
+      father_name: row.FatherName || '',
+      national_code: row.NationalCode || '',
+      gender: String(row.Gender ?? '2'),
+      birth_date: row.BirthDate || '',
+      mobile: row.Mobile || '',
+      email: row.Email || '',
+      specialty: row.Specialty || '',
+      bio: row.Bio || '',
+    })
+    setShowCreate(true)
+    setMessage('')
+    setError('')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  async function handleSubmit(e) {
     e.preventDefault()
     setBusy(true)
     setError('')
     setMessage('')
     try {
-      await api.post('/teachers', {
+      const payload = {
         first_name: form.first_name.trim(),
         last_name: form.last_name.trim(),
         father_name: form.father_name.trim() || null,
@@ -61,26 +92,34 @@ export default function Teachers() {
         email: form.email.trim() || null,
         specialty: form.specialty.trim(),
         bio: form.bio.trim() || null,
-      })
-      setMessage('مدرس ثبت شد')
-      setShowCreate(false)
-      setForm({
-        first_name: '',
-        last_name: '',
-        father_name: '',
-        national_code: '',
-        gender: '2',
-        birth_date: '',
-        mobile: '',
-        email: '',
-        specialty: '',
-        bio: '',
-      })
-      await load('')
+      }
+      if (editId) {
+        await api.put(`/teachers/${editId}`, payload)
+        setMessage('مدرس ویرایش شد')
+      } else {
+        await api.post('/teachers', payload)
+        setMessage('مدرس ثبت شد')
+      }
+      resetForm()
+      await load(search)
     } catch (err) {
       setError(err.message)
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function handleDelete(row) {
+    if (!window.confirm(`حذف مدرس «${row.FirstName} ${row.LastName}»؟`)) return
+    setError('')
+    setMessage('')
+    try {
+      await api.delete(`/teachers/${row.Id}`)
+      setMessage('مدرس آرشیو شد')
+      if (editId === row.Id) resetForm()
+      await load(search)
+    } catch (err) {
+      setError(err.message)
     }
   }
 
@@ -99,7 +138,10 @@ export default function Teachers() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <button className="btn btn-brand rounded-pill" onClick={() => setShowCreate((v) => !v)}>
+          <button
+            className="btn btn-brand rounded-pill"
+            onClick={() => (showCreate ? resetForm() : setShowCreate(true))}
+          >
             {showCreate ? 'بستن' : 'مدرس جدید'}
           </button>
         </div>
@@ -107,7 +149,17 @@ export default function Teachers() {
 
       {showCreate && (
         <div className="create-panel">
-          <form className="row g-2" onSubmit={handleCreate}>
+          <div className="d-flex justify-content-between align-items-center mb-2">
+            <h2 className="h6 fw-bold mb-0">
+              {editId ? `ویرایش مدرس #${editId}` : 'ثبت مدرس جدید'}
+            </h2>
+            {editId && (
+              <button type="button" className="btn btn-sm btn-outline-secondary rounded-pill" onClick={resetForm}>
+                انصراف
+              </button>
+            )}
+          </div>
+          <form className="row g-2" onSubmit={handleSubmit}>
             <div className="col-md-4">
               <label className="form-label">نام</label>
               <input className="form-control" value={form.first_name} onChange={(e) => setForm((p) => ({ ...p, first_name: e.target.value }))} required />
@@ -123,6 +175,7 @@ export default function Teachers() {
             <div className="col-md-4">
               <label className="form-label">کد ملی</label>
               <input className="form-control" value={form.national_code} onChange={(e) => setForm((p) => ({ ...p, national_code: e.target.value.replace(/\D/g, '').slice(0, 10) }))} maxLength={10} required />
+              <div className="form-text">۱۰ رقم معتبر (الگوریتم کد ملی)</div>
             </div>
             <div className="col-md-4">
               <label className="form-label">موبایل</label>
@@ -134,7 +187,11 @@ export default function Teachers() {
             </div>
             <div className="col-md-4">
               <label className="form-label">تاریخ تولد</label>
-              <JalaliDatePicker value={form.birth_date} onChange={(v) => setForm((p) => ({ ...p, birth_date: v }))} />
+              <JalaliDatePicker
+                value={form.birth_date}
+                onChange={(v) => setForm((p) => ({ ...p, birth_date: v }))}
+                maxDate={today}
+              />
             </div>
             <div className="col-md-4">
               <label className="form-label">ایمیل</label>
@@ -149,7 +206,9 @@ export default function Teachers() {
               <input className="form-control" value={form.bio} onChange={(e) => setForm((p) => ({ ...p, bio: e.target.value }))} />
             </div>
             <div className="col-12">
-              <button className="btn btn-brand rounded-pill px-4" disabled={busy}>{busy ? '...' : 'ثبت مدرس'}</button>
+              <button className="btn btn-brand rounded-pill px-4" disabled={busy}>
+                {busy ? '...' : editId ? 'ذخیره' : 'ثبت مدرس'}
+              </button>
             </div>
           </form>
         </div>
@@ -168,9 +227,17 @@ export default function Teachers() {
                   {row.FirstName} {row.LastName}
                 </h2>
                 <p className="muted small mb-2">{row.Specialty || 'تخصص ثبت نشده'}</p>
-                <div className="d-flex flex-wrap gap-2">
+                <div className="d-flex flex-wrap gap-2 mb-3">
                   {row.Mobile && <span className="chip chip-sky">{row.Mobile}</span>}
                   <span className="chip chip-teal">{row.Gender === 1 ? 'خانم' : 'آقا'}</span>
+                </div>
+                <div className="d-flex gap-1">
+                  <button type="button" className="btn btn-sm btn-outline-success rounded-pill" onClick={() => startEdit(row)}>
+                    ویرایش
+                  </button>
+                  <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => handleDelete(row)}>
+                    حذف
+                  </button>
                 </div>
               </div>
             </div>

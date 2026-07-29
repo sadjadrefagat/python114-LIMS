@@ -32,23 +32,44 @@ export default function Dashboard() {
           <Link to="/courses" className="course-tile d-block">
             <i className="bi bi-journal-bookmark text-success fs-3" />
             <h2 className="h6 fw-bold mt-2 mb-1">کاتالوگ دوره‌ها</h2>
-            <p className="muted small mb-0">مشاهده و فیلتر دوره‌ها</p>
+            <p className="muted small mb-0">مشاهده و ثبت دوره</p>
           </Link>
         </div>
         {hasRole('admin', 'secretary') && (
           <>
             <div className="col-md-4">
+              <Link to="/languages" className="course-tile d-block">
+                <i className="bi bi-translate text-primary fs-3" />
+                <h2 className="h6 fw-bold mt-2 mb-1">زبان و سطح</h2>
+                <p className="muted small mb-0">ثبت زبان و سطح CEFR</p>
+              </Link>
+            </div>
+            <div className="col-md-4">
               <Link to="/classes" className="course-tile d-block">
                 <i className="bi bi-people text-info fs-3" />
-                <h2 className="h6 fw-bold mt-2 mb-1">کلاس‌ها</h2>
-                <p className="muted small mb-0">مدیریت گروه‌های آموزشی</p>
+                <h2 className="h6 fw-bold mt-2 mb-1">کلاس‌ها و جلسات</h2>
+                <p className="muted small mb-0">تشکیل کلاس و زمان‌بندی</p>
+              </Link>
+            </div>
+            <div className="col-md-4">
+              <Link to="/teachers" className="course-tile d-block">
+                <i className="bi bi-person-workspace text-warning fs-3" />
+                <h2 className="h6 fw-bold mt-2 mb-1">مدرسان</h2>
+                <p className="muted small mb-0">ثبت و مدیریت مدرس</p>
+              </Link>
+            </div>
+            <div className="col-md-4">
+              <Link to="/students" className="course-tile d-block">
+                <i className="bi bi-person-lines-fill text-danger fs-3" />
+                <h2 className="h6 fw-bold mt-2 mb-1">زبان‌آموزان</h2>
+                <p className="muted small mb-0">ثبت و جستجوی فراگیران</p>
               </Link>
             </div>
             <div className="col-md-4">
               <Link to="/enrollments" className="course-tile d-block">
-                <i className="bi bi-clipboard-check text-warning fs-3" />
+                <i className="bi bi-clipboard-check text-success fs-3" />
                 <h2 className="h6 fw-bold mt-2 mb-1">ثبت‌نام‌ها</h2>
-                <p className="muted small mb-0">وضعیت ثبت‌نام زبان‌آموزان</p>
+                <p className="muted small mb-0">ثبت‌نام در کلاس</p>
               </Link>
             </div>
           </>

@@ -56,9 +56,26 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const detail = data?.detail
-    const message = Array.isArray(detail)
-      ? detail.map((d) => d.msg || JSON.stringify(d)).join('، ')
-      : detail || data?.message || 'خطایی رخ داد'
+    let message
+    if (Array.isArray(detail)) {
+      message = detail
+        .map((d) => {
+          const raw = d.msg || d.message || JSON.stringify(d)
+          return String(raw)
+            .replace(/^Value error,\s*/i, '')
+            .replace(/^Assertion failed,\s*/i, '')
+        })
+        .filter(Boolean)
+        .join('، ')
+    } else if (typeof detail === 'string') {
+      message = detail
+    } else {
+      message = data?.message || 'خطایی رخ داد'
+    }
+    // اگر هنوز پیام انگلیسی خام ماند، پیام کلی فارسی
+    if (/string does not match|string_type|field required|value is not/i.test(message)) {
+      message = data?.message || 'داده ارسالی نامعتبر است'
+    }
     const error = new Error(message)
     error.status = response.status
     error.data = data

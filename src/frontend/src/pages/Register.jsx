@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import JalaliDatePicker, { todayJalaliString } from '../components/JalaliDatePicker'
+import VazirSelect from '../components/VazirSelect'
 
 const initialForm = {
   username: '',
@@ -18,17 +20,36 @@ const initialForm = {
   target_language_ref: '',
 }
 
+function isFocusableField(el) {
+  if (!el || el.disabled) return false
+  if (el.classList?.contains('vazir-select-required')) return false
+  if (el.getAttribute('tabindex') === '-1') return false
+  const tag = el.tagName
+  if (tag === 'INPUT') {
+    const type = (el.type || 'text').toLowerCase()
+    if (['hidden', 'submit', 'button', 'reset', 'file'].includes(type)) return false
+    return true
+  }
+  if (tag === 'BUTTON' && el.classList.contains('vazir-select-trigger')) return true
+  if (tag === 'BUTTON' && el.type === 'submit') return true
+  return false
+}
+
 export default function Register() {
   const { register, isAuthenticated } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const redirectTo = location.state?.from || '/dashboard'
   const [form, setForm] = useState(initialForm)
   const [languages, setLanguages] = useState([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const formRef = useRef(null)
+  const today = useMemo(() => todayJalaliString(), [])
 
   useEffect(() => {
-    if (isAuthenticated) navigate('/dashboard', { replace: true })
-  }, [isAuthenticated, navigate])
+    if (isAuthenticated) navigate(redirectTo, { replace: true })
+  }, [isAuthenticated, navigate, redirectTo])
 
   useEffect(() => {
     api
@@ -39,6 +60,40 @@ export default function Register() {
 
   function update(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  function focusNextField(fromEl) {
+    const root = formRef.current
+    if (!root) return false
+    const fields = [...root.querySelectorAll('input, button')].filter(isFocusableField)
+    let current = fromEl
+    if (current?.closest?.('.vazir-select')) {
+      current = current.closest('.vazir-select').querySelector('.vazir-select-trigger') || current
+    }
+    const idx = fields.indexOf(current)
+    if (idx === -1) return false
+    if (idx < fields.length - 1) {
+      fields[idx + 1].focus()
+      return true
+    }
+    return false
+  }
+
+  function handleFormKeyDown(e) {
+    if (e.key !== 'Enter') return
+    if (e.target.tagName === 'TEXTAREA') return
+    if (e.target.closest?.('.vazir-select-option')) return
+    if (e.target.closest?.('.vazir-select-menu')) return
+
+    const isSubmitBtn =
+      e.target.type === 'submit' || e.target.closest?.('button[type="submit"]')
+    if (isSubmitBtn) return
+
+    e.preventDefault()
+    const moved = focusNextField(e.target)
+    if (!moved) {
+      formRef.current?.requestSubmit()
+    }
   }
 
   async function handleSubmit(e) {
@@ -57,8 +112,12 @@ export default function Register() {
       setError('کد ملی باید دقیقاً ۱۰ رقم باشد')
       return
     }
-    if (!/^\d{4}\/\d{2}\/\d{2}$/.test(form.birth_date)) {
-      setError('تاریخ تولد را به صورت 1370/01/15 وارد کنید')
+    if (!form.birth_date) {
+      setError('تاریخ تولد را انتخاب کنید')
+      return
+    }
+    if (!form.father_name.trim()) {
+      setError('نام پدر الزامی است')
       return
     }
 
@@ -80,7 +139,7 @@ export default function Register() {
           : null,
         preferred_ui_language: 'fa',
       })
-      navigate('/dashboard', { replace: true })
+      navigate(redirectTo, { replace: true })
     } catch (err) {
       setError(err.message || 'ثبت‌نام ناموفق بود')
     } finally {
@@ -101,10 +160,18 @@ export default function Register() {
 
         {error && <div className="alert alert-danger py-2">{error}</div>}
 
-        <form onSubmit={handleSubmit} className="row g-3">
+        <form
+          ref={formRef}
+          onSubmit={handleSubmit}
+          onKeyDown={handleFormKeyDown}
+          className="row g-3"
+        >
           <div className="col-md-6">
-            <label className="form-label">نام</label>
+            <label className="form-label" htmlFor="reg-first-name">
+              نام
+            </label>
             <input
+              id="reg-first-name"
               className="form-control"
               value={form.first_name}
               onChange={(e) => update('first_name', e.target.value)}
@@ -112,8 +179,11 @@ export default function Register() {
             />
           </div>
           <div className="col-md-6">
-            <label className="form-label">نام خانوادگی</label>
+            <label className="form-label" htmlFor="reg-last-name">
+              نام خانوادگی
+            </label>
             <input
+              id="reg-last-name"
               className="form-control"
               value={form.last_name}
               onChange={(e) => update('last_name', e.target.value)}
@@ -121,28 +191,40 @@ export default function Register() {
             />
           </div>
           <div className="col-md-6">
-            <label className="form-label">نام پدر</label>
+            <label className="form-label" htmlFor="reg-father-name">
+              نام پدر
+            </label>
             <input
+              id="reg-father-name"
               className="form-control"
               value={form.father_name}
               onChange={(e) => update('father_name', e.target.value)}
               required
+              autoComplete="off"
             />
           </div>
           <div className="col-md-6">
-            <label className="form-label">کد ملی</label>
+            <label className="form-label" htmlFor="reg-national-code">
+              کد ملی
+            </label>
             <input
+              id="reg-national-code"
               className="form-control"
               value={form.national_code}
-              onChange={(e) => update('national_code', e.target.value.replace(/\D/g, '').slice(0, 10))}
+              onChange={(e) =>
+                update('national_code', e.target.value.replace(/\D/g, '').slice(0, 10))
+              }
               inputMode="numeric"
               maxLength={10}
               required
             />
           </div>
           <div className="col-md-6">
-            <label className="form-label">موبایل</label>
+            <label className="form-label" htmlFor="reg-mobile">
+              موبایل
+            </label>
             <input
+              id="reg-mobile"
               className="form-control"
               value={form.mobile}
               onChange={(e) => update('mobile', e.target.value)}
@@ -151,44 +233,43 @@ export default function Register() {
             />
           </div>
           <div className="col-md-6">
-            <label className="form-label">تاریخ تولد (شمسی)</label>
-            <input
-              className="form-control"
-              value={form.birth_date}
-              onChange={(e) => update('birth_date', e.target.value)}
-              placeholder="1370/01/15"
+            <label className="form-label">تاریخ تولد شمسی</label>
+            <JalaliDatePicker
               required
+              value={form.birth_date}
+              onChange={(v) => update('birth_date', v)}
+              maxDate={today}
             />
           </div>
           <div className="col-md-6">
             <label className="form-label">جنسیت</label>
-            <select
-              className="form-select"
+            <VazirSelect
               value={form.gender}
-              onChange={(e) => update('gender', e.target.value)}
-            >
-              <option value="1">خانم</option>
-              <option value="2">آقا</option>
-            </select>
+              onChange={(v) => update('gender', v)}
+              options={[
+                { value: '1', label: 'خانم' },
+                { value: '2', label: 'آقا' },
+              ]}
+            />
           </div>
           <div className="col-md-6">
             <label className="form-label">زبان هدف (اختیاری)</label>
-            <select
-              className="form-select"
+            <VazirSelect
               value={form.target_language_ref}
-              onChange={(e) => update('target_language_ref', e.target.value)}
-            >
-              <option value="">انتخاب نشده</option>
-              {languages.map((lang) => (
-                <option key={lang.Id} value={lang.Id}>
-                  {lang.Name}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => update('target_language_ref', v)}
+              placeholder="انتخاب نشده"
+              options={languages.map((lang) => ({
+                value: String(lang.Id),
+                label: lang.Name,
+              }))}
+            />
           </div>
           <div className="col-md-6">
-            <label className="form-label">ایمیل (اختیاری)</label>
+            <label className="form-label" htmlFor="reg-email">
+              ایمیل (اختیاری)
+            </label>
             <input
+              id="reg-email"
               type="email"
               className="form-control"
               value={form.email}
@@ -197,8 +278,11 @@ export default function Register() {
             />
           </div>
           <div className="col-md-6">
-            <label className="form-label">نام کاربری</label>
+            <label className="form-label" htmlFor="reg-username">
+              نام کاربری
+            </label>
             <input
+              id="reg-username"
               className="form-control"
               value={form.username}
               onChange={(e) => update('username', e.target.value)}
@@ -207,8 +291,11 @@ export default function Register() {
             />
           </div>
           <div className="col-md-6">
-            <label className="form-label">رمز عبور</label>
+            <label className="form-label" htmlFor="reg-password">
+              رمز عبور
+            </label>
             <input
+              id="reg-password"
               type="password"
               className="form-control"
               value={form.password}
@@ -219,8 +306,11 @@ export default function Register() {
             />
           </div>
           <div className="col-md-6">
-            <label className="form-label">تکرار رمز عبور</label>
+            <label className="form-label" htmlFor="reg-password-confirm">
+              تکرار رمز عبور
+            </label>
             <input
+              id="reg-password-confirm"
               type="password"
               className="form-control"
               value={form.password_confirm}
@@ -231,7 +321,7 @@ export default function Register() {
             />
           </div>
           <div className="col-12 d-grid">
-            <button className="btn btn-brand rounded-pill py-2" disabled={busy}>
+            <button type="submit" className="btn btn-brand rounded-pill py-2" disabled={busy}>
               {busy ? 'در حال ثبت‌نام...' : 'ثبت‌نام و ورود'}
             </button>
           </div>

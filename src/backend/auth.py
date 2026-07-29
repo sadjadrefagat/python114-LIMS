@@ -104,6 +104,10 @@ def get_user_roles(user: dict[str, Any]) -> list[str]:
     return [code] if code else []
 
 
+def is_admin_user(user: dict[str, Any]) -> bool:
+    return (user.get("RoleCode") or "").lower() == "admin"
+
+
 def public_user(user: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": user["Id"],
@@ -153,7 +157,15 @@ def find_valid_refresh_session(refresh_token: str) -> Optional[dict[str, Any]]:
     )
 
 
-def register_failed_login(user_id: int, failed_count: int) -> None:
+def register_failed_login(user_id: int, failed_count: int, *, is_admin: bool = False) -> None:
+    """افزایش شمارنده ورود ناموفق — حساب admin هرگز قفل نمی‌شود"""
+    if is_admin:
+        execute(
+            "UPDATE AppUser SET FailedLoginCount = 0, LockedUntil = NULL WHERE Id = ?",
+            (user_id,),
+        )
+        return
+
     new_count = failed_count + 1
     if new_count >= settings.max_failed_logins:
         execute(
@@ -164,6 +176,18 @@ def register_failed_login(user_id: int, failed_count: int) -> None:
         )
     else:
         execute("UPDATE AppUser SET FailedLoginCount = ? WHERE Id = ?", (new_count, user_id))
+
+
+def unlock_admin_accounts() -> int:
+    """پاک‌کردن قفل همه کاربران نقش admin"""
+    return execute(
+        """UPDATE U
+           SET U.FailedLoginCount = 0, U.LockedUntil = NULL
+           FROM AppUser U
+           JOIN Role R ON U.RoleRef = R.Id
+           WHERE R.Code = N'admin'
+             AND (U.LockedUntil IS NOT NULL OR U.FailedLoginCount <> 0)"""
+    )
 
 
 def reset_failed_login(user_id: int) -> None:

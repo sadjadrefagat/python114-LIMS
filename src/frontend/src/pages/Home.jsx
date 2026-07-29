@@ -86,9 +86,14 @@ export default function Home() {
                     {course.LevelName || 'سطح آزاد'} · {course.SessionsCount} جلسه
                   </p>
                   <div className="fw-bold text-success mb-3">{formatMoney(course.Cost)}</div>
-                  <Link to={`/courses/${course.Id}`} className="btn btn-sm btn-brand rounded-pill">
-                    جزئیات
-                  </Link>
+                  <div className="d-flex gap-2">
+                    <Link to={`/courses/${course.Id}`} className="btn btn-sm btn-outline-success rounded-pill">
+                      جزئیات
+                    </Link>
+                    <Link to={`/courses/${course.Id}#enroll`} className="btn btn-sm btn-brand rounded-pill">
+                      ثبت‌نام
+                    </Link>
+                  </div>
                 </div>
               </div>
             ))}
