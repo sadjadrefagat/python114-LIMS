@@ -3,7 +3,9 @@ import { api } from '../api/client'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
 import PaginationBar from '../components/PaginationBar'
+import RowActions from '../components/RowActions'
 import { useClientPagination } from '../hooks/useClientPagination'
+import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 
 const empty = {
   language_ref: '',
@@ -13,6 +15,7 @@ const empty = {
 }
 
 export default function Levels() {
+  const [askConfirm, confirmDialog] = useConfirmDialog()
   const [rows, setRows] = useState([])
   const [languages, setLanguages] = useState([])
   const [form, setForm] = useState(empty)
@@ -26,17 +29,33 @@ export default function Levels() {
 
   async function load(q = search) {
     setLoading(true)
+    setError('')
     try {
       const query = q.trim() ? `?search=${encodeURIComponent(q.trim())}` : ''
-      const [lv, lang] = await Promise.all([
+      const [lvResult, langResult] = await Promise.allSettled([
         api.get(`/levels${query}`),
         api.get('/languages'),
       ])
-      setRows(lv.levels || [])
-      setLanguages(lang.languages || [])
-      setError('')
+
+      const errors = []
+      if (lvResult.status === 'fulfilled') {
+        setRows(lvResult.value.levels || [])
+      } else {
+        setRows([])
+        errors.push(lvResult.reason?.message || 'دریافت سطح‌ها ناموفق بود')
+      }
+
+      if (langResult.status === 'fulfilled') {
+        setLanguages(langResult.value.languages || [])
+      } else {
+        setLanguages([])
+        errors.push(langResult.reason?.message || 'دریافت زبان‌ها ناموفق بود')
+      }
+
+      if (errors.length) setError(errors.join(' — '))
     } catch (err) {
       setError(err.message)
+      setRows([])
     } finally {
       setLoading(false)
     }
@@ -67,6 +86,19 @@ export default function Levels() {
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (!form.language_ref) {
+      setError('زبان را انتخاب کنید')
+      return
+    }
+    if (!form.name.trim()) {
+      setError('نام سطح را وارد کنید')
+      return
+    }
+    if (!form.code.trim()) {
+      setError('کد سطح را وارد کنید')
+      return
+    }
+
     setBusy(true)
     setError('')
     setMessage('')
@@ -94,7 +126,18 @@ export default function Levels() {
   }
 
   async function handleDelete(row) {
-    if (!window.confirm(`حذف سطح «${row.Name}»؟`)) return
+    const ok = await askConfirm({
+      title: 'حذف سطح',
+      message: 'این سطح آرشیو می‌شود و دیگر در فهرست فعال نمایش داده نمی‌شود.',
+      confirmLabel: 'آرشیو سطح',
+      details: [
+        { label: 'نام سطح', value: row.Name },
+        { label: 'کد', value: row.Code },
+        { label: 'زبان', value: row.LanguageName },
+        { label: 'ترتیب', value: row.SortOrder },
+      ],
+    })
+    if (!ok) return
     setError('')
     setMessage('')
     try {
@@ -109,6 +152,7 @@ export default function Levels() {
 
   return (
     <div className="container py-4">
+      {confirmDialog}
       <div className="page-head d-flex flex-wrap justify-content-between gap-2">
         <div>
           <h1 className="section-title h3 mb-1">سطح‌ها</h1>
@@ -180,7 +224,14 @@ export default function Levels() {
       </div>
 
       {message && <div className="alert alert-success py-2">{message}</div>}
-      {error && <div className="alert alert-danger py-2">{error}</div>}
+      {error && (
+        <div className="alert alert-danger py-2 d-flex flex-wrap justify-content-between align-items-center gap-2">
+          <span>{error}</span>
+          <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => load(search)}>
+            تلاش مجدد
+          </button>
+        </div>
+      )}
       {loading ? (
         <Loading />
       ) : (
@@ -203,12 +254,7 @@ export default function Levels() {
                   <td>{row.Name}</td>
                   <td>{row.SortOrder}</td>
                   <td className="text-nowrap">
-                    <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEdit(row)}>
-                      ویرایش
-                    </button>
-                    <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => handleDelete(row)}>
-                      حذف
-                    </button>
+                    <RowActions onEdit={() => startEdit(row)} onDelete={() => handleDelete(row)} />
                   </td>
                 </tr>
               ))}

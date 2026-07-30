@@ -75,7 +75,7 @@ export default function VazirSelect({
     <div className={`vazir-select ${multiple ? 'is-multiple' : ''} ${className}`} ref={rootRef}>
       <button
         type="button"
-        className={`vazir-select-trigger form-select text-start ${disabled ? 'disabled' : ''}`}
+        className={`vazir-select-trigger form-select text-start ${open ? 'is-open' : ''} ${disabled ? 'disabled' : ''}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={listId}
@@ -83,7 +83,13 @@ export default function VazirSelect({
         disabled={disabled}
         onClick={() => !disabled && setOpen((v) => !v)}
       >
-        <span className={hasValue ? '' : 'text-muted'}>{displayLabel()}</span>
+        <span className={`vazir-select-label ${hasValue ? '' : 'is-placeholder'}`}>
+          {displayLabel()}
+        </span>
+        <i
+          className={`bi bi-chevron-down vazir-select-caret ${open ? 'is-open' : ''}`}
+          aria-hidden="true"
+        />
       </button>
 
       {required && (

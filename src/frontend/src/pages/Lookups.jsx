@@ -2,11 +2,14 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import Loading from '../components/Loading'
 import PaginationBar from '../components/PaginationBar'
+import RowActions from '../components/RowActions'
 import { useClientPagination } from '../hooks/useClientPagination'
+import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 
 const emptyBranch = { name: '', address: '', phone: '' }
 
 export default function Lookups() {
+  const [askConfirm, confirmDialog] = useConfirmDialog()
   const [sessionTypes, setSessionTypes] = useState([])
   const [branches, setBranches] = useState([])
   const [stSearch, setStSearch] = useState('')
@@ -83,7 +86,16 @@ export default function Lookups() {
   }
 
   async function deleteSessionType(row) {
-    if (!window.confirm(`حذف نوع جلسه «${row.Name}»؟`)) return
+    const ok = await askConfirm({
+      title: 'حذف نوع جلسه',
+      message: 'این نوع جلسه حذف می‌شود؛ در صورت استفاده در جلسات، ممکن است عملیات رد شود.',
+      confirmLabel: 'حذف نوع جلسه',
+      details: [
+        { label: 'نام', value: row.Name },
+        { label: 'شناسه', value: row.Id },
+      ],
+    })
+    if (!ok) return
     setMessage('')
     setError('')
     try {
@@ -137,7 +149,17 @@ export default function Lookups() {
   }
 
   async function deleteBranch(row) {
-    if (!window.confirm(`حذف شعبه «${row.Name}»؟`)) return
+    const ok = await askConfirm({
+      title: 'حذف شعبه',
+      message: 'این شعبه آرشیو می‌شود و از فهرست فعال خارج خواهد شد.',
+      confirmLabel: 'آرشیو شعبه',
+      details: [
+        { label: 'نام شعبه', value: row.Name },
+        { label: 'تلفن', value: row.Phone },
+        { label: 'آدرس', value: row.Address },
+      ],
+    })
+    if (!ok) return
     setMessage('')
     setError('')
     try {
@@ -152,6 +174,7 @@ export default function Lookups() {
 
   return (
     <div className="container py-4">
+      {confirmDialog}
       <div className="page-head">
         <h1 className="section-title h3 mb-1">اطلاعات پایه</h1>
         <p className="muted mb-0">نوع جلسه و شعب</p>
@@ -204,12 +227,10 @@ export default function Lookups() {
                         {s.Id}. {s.Name}
                       </span>
                       <span className="text-nowrap">
-                        <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEditSessionType(s)}>
-                          ویرایش
-                        </button>
-                        <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => deleteSessionType(s)}>
-                          حذف
-                        </button>
+                        <RowActions
+                          onEdit={() => startEditSessionType(s)}
+                          onDelete={() => deleteSessionType(s)}
+                        />
                       </span>
                     </li>
                   ))}
@@ -288,12 +309,7 @@ export default function Lookups() {
                         {b.Address ? ` — ${b.Address}` : ''}
                       </span>
                       <span className="text-nowrap">
-                        <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEditBranch(b)}>
-                          ویرایش
-                        </button>
-                        <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => deleteBranch(b)}>
-                          حذف
-                        </button>
+                        <RowActions onEdit={() => startEditBranch(b)} onDelete={() => deleteBranch(b)} />
                       </span>
                     </li>
                   ))}

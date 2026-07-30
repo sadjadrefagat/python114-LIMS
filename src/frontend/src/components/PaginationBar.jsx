@@ -1,7 +1,37 @@
 import { PAGE_SIZE } from '../hooks/useClientPagination'
 
 /**
- * نوار صفحه‌بندی فارسی — ۵۰ رکورد در صفحه
+ * حداکثر ۵ شماره صفحه + … برای صفحات خارج از پنجره
+ * دکمه‌های اول/آخر جدا هستند و اینجا تکرار نمی‌شوند.
+ */
+function buildPageItems(page, totalPages) {
+  if (totalPages <= 1) return []
+  if (totalPages <= 5) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1)
+  }
+
+  const windowSize = 5
+  let start = page - Math.floor(windowSize / 2)
+  let end = start + windowSize - 1
+
+  if (start < 1) {
+    start = 1
+    end = windowSize
+  }
+  if (end > totalPages) {
+    end = totalPages
+    start = totalPages - windowSize + 1
+  }
+
+  const items = []
+  if (start > 1) items.push('…')
+  for (let i = start; i <= end; i += 1) items.push(i)
+  if (end < totalPages) items.push('…')
+  return items
+}
+
+/**
+ * نوار صفحه‌بندی — اول / قبلی / حداکثر ۵ شماره / بعدی / آخر
  */
 export default function PaginationBar({
   page,
@@ -16,21 +46,12 @@ export default function PaginationBar({
 
   const canPrev = page > 1
   const canNext = page < totalPages
+  const items = buildPageItems(page, totalPages)
 
   function go(p) {
     const next = Math.min(Math.max(1, p), totalPages)
     if (next !== page) onChange?.(next)
   }
-
-  const windowPages = (() => {
-    const maxButtons = 5
-    let start = Math.max(1, page - Math.floor(maxButtons / 2))
-    let end = Math.min(totalPages, start + maxButtons - 1)
-    start = Math.max(1, end - maxButtons + 1)
-    const pages = []
-    for (let i = start; i <= end; i += 1) pages.push(i)
-    return pages
-  })()
 
   return (
     <div className="pagination-bar">
@@ -42,52 +63,64 @@ export default function PaginationBar({
         <nav className="pagination-nav" aria-label="صفحه‌بندی">
           <button
             type="button"
-            className="btn btn-sm btn-outline-secondary rounded-pill"
+            className="btn btn-sm btn-outline-secondary pagination-btn"
             disabled={!canPrev}
-            onClick={() => go(page - 1)}
+            title="اولین صفحه"
+            aria-label="اولین صفحه"
+            onClick={() => go(1)}
           >
-            قبلی
+            <i className="bi bi-chevron-double-right" aria-hidden="true" />
           </button>
-          {windowPages[0] > 1 && (
-            <>
-              <button type="button" className="btn btn-sm btn-light rounded-pill" onClick={() => go(1)}>
-                1
-              </button>
-              {windowPages[0] > 2 && <span className="pagination-ellipsis">…</span>}
-            </>
-          )}
-          {windowPages.map((p) => (
-            <button
-              key={p}
-              type="button"
-              className={`btn btn-sm rounded-pill ${p === page ? 'btn-brand' : 'btn-light'}`}
-              aria-current={p === page ? 'page' : undefined}
-              onClick={() => go(p)}
-            >
-              {p}
-            </button>
-          ))}
-          {windowPages[windowPages.length - 1] < totalPages && (
-            <>
-              {windowPages[windowPages.length - 1] < totalPages - 1 && (
-                <span className="pagination-ellipsis">…</span>
-              )}
-              <button
-                type="button"
-                className="btn btn-sm btn-light rounded-pill"
-                onClick={() => go(totalPages)}
-              >
-                {totalPages}
-              </button>
-            </>
-          )}
           <button
             type="button"
-            className="btn btn-sm btn-outline-secondary rounded-pill"
+            className="btn btn-sm btn-outline-secondary pagination-btn"
+            disabled={!canPrev}
+            title="صفحه قبل"
+            aria-label="صفحه قبل"
+            onClick={() => go(page - 1)}
+          >
+            <i className="bi bi-chevron-right" aria-hidden="true" />
+            <span className="pagination-btn-label">قبلی</span>
+          </button>
+
+          {items.map((item, idx) =>
+            item === '…' ? (
+              <span key={`e-${idx}`} className="pagination-ellipsis" aria-hidden="true">
+                …
+              </span>
+            ) : (
+              <button
+                key={item}
+                type="button"
+                className={`btn btn-sm pagination-btn ${item === page ? 'btn-brand' : 'btn-light'}`}
+                aria-current={item === page ? 'page' : undefined}
+                onClick={() => go(item)}
+              >
+                {item}
+              </button>
+            ),
+          )}
+
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-secondary pagination-btn"
             disabled={!canNext}
+            title="صفحه بعد"
+            aria-label="صفحه بعد"
             onClick={() => go(page + 1)}
           >
-            بعدی
+            <span className="pagination-btn-label">بعدی</span>
+            <i className="bi bi-chevron-left" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-secondary pagination-btn"
+            disabled={!canNext}
+            title="آخرین صفحه"
+            aria-label="آخرین صفحه"
+            onClick={() => go(totalPages)}
+          >
+            <i className="bi bi-chevron-double-left" aria-hidden="true" />
           </button>
         </nav>
       )}

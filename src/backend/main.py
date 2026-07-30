@@ -8,10 +8,10 @@ from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 import pyodbc
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 from auth import (
@@ -127,6 +127,135 @@ async def pydantic_validation_handler(_request: Request, exc: ValidationError):
 StaffDep = Depends(require_roles("admin", "secretary"))
 FinanceDep = Depends(require_roles("admin", "secretary", "finance"))
 TeacherStaffDep = Depends(require_roles("admin", "secretary", "teacher"))
+
+TEACHER_PHOTO_MAX_BYTES = 2 * 1024 * 1024
+TEACHER_PHOTO_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"}
+
+
+def ensure_teacher_photo_schema() -> None:
+    """افزودن ستون‌های عکس مدرس در صورت نبود"""
+    if not fetch_one(
+        """SELECT 1 AS Ok FROM sys.columns
+           WHERE object_id = OBJECT_ID(N'dbo.Teacher') AND name = N'Photo'"""
+    ):
+        execute("ALTER TABLE dbo.Teacher ADD [Photo] VARBINARY(MAX) NULL")
+    if not fetch_one(
+        """SELECT 1 AS Ok FROM sys.columns
+           WHERE object_id = OBJECT_ID(N'dbo.Teacher') AND name = N'PhotoMime'"""
+    ):
+        execute("ALTER TABLE dbo.Teacher ADD [PhotoMime] VARCHAR(100) NULL")
+
+
+def ensure_financial_status_schema() -> None:
+    """وضعیت مالی: بدهکار / بستانکار / تسویه‌شده"""
+    execute(
+        """UPDATE dbo.Registration
+           SET FinancialStatus = N'debtor'
+           WHERE FinancialStatus = N'partial'"""
+    )
+    row = fetch_one(
+        """SELECT definition FROM sys.check_constraints
+           WHERE name = N'CK_Registration_FinancialStatus'"""
+    )
+    definition = (row or {}).get("definition") or ""
+    if "creditor" not in definition:
+        try:
+            execute("ALTER TABLE dbo.Registration DROP CONSTRAINT [CK_Registration_FinancialStatus]")
+        except Exception:
+            pass
+        execute(
+            """ALTER TABLE dbo.Registration ADD CONSTRAINT [CK_Registration_FinancialStatus]
+               CHECK ([FinancialStatus] IN (N'debtor', N'creditor', N'settled'))"""
+        )
+
+
+def compute_finance_metrics(course_cost: Any, paid_amount: Any) -> dict[str, Any]:
+    """
+    قاعده مالی:
+    balance = paid - due
+    balance < 0 → بدهکار (شدت = درصد باقی‌مانده از شهریه)
+    balance = 0 → تسویه‌شده
+    balance > 0 → بستانکار (شدت = درصد مازاد نسبت به شهریه، سقف ۱۰۰)
+    """
+    due = float(course_cost or 0)
+    paid = float(paid_amount or 0)
+    balance = paid - due
+    if due <= 0:
+        if paid > 0:
+            status, intensity = "creditor", 100
+        else:
+            status, intensity = "settled", 100
+    elif balance < 0:
+        status = "debtor"
+        intensity = int(round(min(100.0, max(0.0, (-balance) / due * 100.0))))
+    elif balance > 0:
+        status = "creditor"
+        intensity = int(round(min(100.0, max(0.0, balance / due * 100.0))))
+    else:
+        status, intensity = "settled", 100
+    return {
+        "CourseCost": due,
+        "PaidAmount": paid,
+        "Balance": balance,
+        "FinanceIntensity": intensity,
+        "DerivedFinancialStatus": status,
+    }
+
+
+def enrich_enrollment_finance(row: dict[str, Any]) -> dict[str, Any]:
+    metrics = compute_finance_metrics(row.get("CourseCost"), row.get("PaidAmount"))
+    row.update(metrics)
+    # نمایش و منطق UI بر اساس وضعیت محاسبه‌شده
+    row["FinancialStatus"] = metrics["DerivedFinancialStatus"]
+    return row
+
+
+def sync_registration_financial_status(registration_id: int) -> str:
+    """به‌روزرسانی FinancialStatus ثبت‌نام بر اساس شهریه و پرداخت‌های موفق"""
+    row = fetch_one(
+        """SELECT C.Cost AS CourseCost,
+                  ISNULL((
+                      SELECT SUM(P.Amount) FROM Payment P
+                      WHERE P.RegistrationRef = R.Id AND P.Status = N'paid'
+                  ), 0) AS PaidAmount
+           FROM Registration R
+           JOIN Course C ON R.CourseRef = C.Id
+           WHERE R.Id = ?""",
+        (registration_id,),
+    )
+    if not row:
+        return "debtor"
+    status = compute_finance_metrics(row.get("CourseCost"), row.get("PaidAmount"))["DerivedFinancialStatus"]
+    execute(
+        "UPDATE Registration SET FinancialStatus = ? WHERE Id = ?",
+        (status, registration_id),
+    )
+    return status
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    try:
+        ensure_teacher_photo_schema()
+    except Exception as exc:
+        print(f"[startup] ensure_teacher_photo_schema failed: {exc}")
+    try:
+        ensure_financial_status_schema()
+    except Exception as exc:
+        print(f"[startup] ensure_financial_status_schema failed: {exc}")
+
+
+async def _read_teacher_photo(photo: UploadFile) -> tuple[bytes, str]:
+    mime = (photo.content_type or "").lower().strip()
+    if mime not in TEACHER_PHOTO_TYPES:
+        raise _bad_request("فرمت تصویر مجاز نیست (jpeg، png، webp، gif)")
+    data = await photo.read()
+    if not data:
+        raise _bad_request("فایل تصویر خالی است")
+    if len(data) > TEACHER_PHOTO_MAX_BYTES:
+        raise _bad_request("حجم تصویر نباید بیشتر از ۲ مگابایت باشد")
+    return data, mime
+
 AuthDep = Depends(get_current_user)
 
 
@@ -436,10 +565,16 @@ async def create_language(body: LanguageCreate, user: dict = StaffDep):
 async def update_language(language_id: int, body: LanguageUpdate, user: dict = StaffDep):
     if not fetch_one("SELECT Id FROM Language WHERE Id = ?", (language_id,)):
         raise _not_found("Language")
-    dup = fetch_one("SELECT Id FROM Language WHERE Name = ? AND Id <> ?", (body.name, language_id))
+    name = (body.name or "").strip()
+    if not name:
+        raise _bad_request("نام زبان را وارد کنید")
+    dup = fetch_one("SELECT Id FROM Language WHERE Name = ? AND Id <> ?", (name, language_id))
     if dup:
         raise _bad_request("نام زبان تکراری است")
-    execute("UPDATE Language SET Name = ? WHERE Id = ?", (body.name, language_id))
+    try:
+        execute("UPDATE Language SET Name = ? WHERE Id = ?", (name, language_id))
+    except pyodbc.IntegrityError as exc:
+        raise _bad_request("نام زبان تکراری یا نامعتبر است") from exc
     return {"message": "Language updated", "id": language_id}
 
 
@@ -828,7 +963,8 @@ async def course_history(course_id: int, user: dict = StaffDep):
 async def list_teachers(search: Optional[str] = None, include_inactive: bool = False, user: dict = AuthDep):
     query = """
         SELECT Id, FirstName, LastName, FatherName, NationalCode, Gender,
-               BirthDate, Mobile, Email, Specialty, Bio, IsActive, Creator, CreatedAt
+               BirthDate, Mobile, Email, Specialty, Bio, IsActive, Creator, CreatedAt,
+               CASE WHEN Photo IS NULL THEN 0 ELSE 1 END AS HasPhoto
         FROM Teacher WHERE 1=1
     """
     params: list[Any] = []
@@ -844,13 +980,54 @@ async def list_teachers(search: Optional[str] = None, include_inactive: bool = F
 async def get_teacher(teacher_id: int, user: dict = AuthDep):
     row = fetch_one(
         """SELECT Id, FirstName, LastName, FatherName, NationalCode, Gender,
-                  BirthDate, Mobile, Email, Specialty, Bio, IsActive, Creator, CreatedAt
+                  BirthDate, Mobile, Email, Specialty, Bio, IsActive, Creator, CreatedAt,
+                  CASE WHEN Photo IS NULL THEN 0 ELSE 1 END AS HasPhoto
            FROM Teacher WHERE Id = ?""",
         (teacher_id,),
     )
     if not row:
         raise _not_found("Teacher")
     return {"teacher": row}
+
+
+@app.get("/teachers/{teacher_id}/photo")
+async def get_teacher_photo(teacher_id: int):
+    """سرو عکس مدرس — بدون احراز هویت تا <img> بتواند مستقیم لود کند"""
+    row = fetch_one(
+        "SELECT Photo, PhotoMime FROM Teacher WHERE Id = ? AND IsActive = 1",
+        (teacher_id,),
+    )
+    if not row or not row.get("Photo"):
+        raise _not_found("Teacher photo")
+    photo = row["Photo"]
+    if isinstance(photo, memoryview):
+        photo = photo.tobytes()
+    mime = row.get("PhotoMime") or "image/jpeg"
+    return Response(content=photo, media_type=mime, headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.post("/teachers/{teacher_id}/photo")
+async def upload_teacher_photo(
+    teacher_id: int,
+    photo: UploadFile = File(...),
+    user: dict = StaffDep,
+):
+    if not fetch_one("SELECT Id FROM Teacher WHERE Id = ?", (teacher_id,)):
+        raise _not_found("Teacher")
+    data, mime = await _read_teacher_photo(photo)
+    execute(
+        "UPDATE Teacher SET Photo = ?, PhotoMime = ? WHERE Id = ?",
+        (data, mime, teacher_id),
+    )
+    return {"message": "Teacher photo updated", "id": teacher_id, "has_photo": True}
+
+
+@app.delete("/teachers/{teacher_id}/photo")
+async def delete_teacher_photo(teacher_id: int, user: dict = StaffDep):
+    if not fetch_one("SELECT Id FROM Teacher WHERE Id = ?", (teacher_id,)):
+        raise _not_found("Teacher")
+    execute("UPDATE Teacher SET Photo = NULL, PhotoMime = NULL WHERE Id = ?", (teacher_id,))
+    return {"message": "Teacher photo removed", "id": teacher_id, "has_photo": False}
 
 
 @app.post("/teachers", status_code=201)
@@ -1488,7 +1665,12 @@ ENROLLMENT_SELECT = """
         R.Status, R.WithdrawReason, R.FinancialStatus, R.CreatedAt,
         St.FirstName + N' ' + St.LastName AS StudentName,
         C.Name AS CourseName,
-        Cl.Capacity AS ClassCapacity
+        C.Cost AS CourseCost,
+        Cl.Capacity AS ClassCapacity,
+        ISNULL((
+            SELECT SUM(P.Amount) FROM Payment P
+            WHERE P.RegistrationRef = R.Id AND P.Status = N'paid'
+        ), 0) AS PaidAmount
     FROM Registration R
     JOIN Student St ON R.Studentref = St.Id
     JOIN Course C ON R.CourseRef = C.Id
@@ -1528,7 +1710,8 @@ async def list_enrollments(
         like = f"%{search}%"
         params.extend([like, like, like])
     query += " ORDER BY R.Id DESC"
-    return _ok_list("enrollments", fetch_all(query, tuple(params)))
+    rows = fetch_all(query, tuple(params))
+    return _ok_list("enrollments", [enrich_enrollment_finance(r) for r in rows])
 
 
 @app.get("/enrollments/{enrollment_id}")
@@ -1536,7 +1719,7 @@ async def get_enrollment(enrollment_id: int, user: dict = AuthDep):
     row = fetch_one(ENROLLMENT_SELECT + " WHERE R.Id = ?", (enrollment_id,))
     if not row:
         raise _not_found("Enrollment")
-    return {"enrollment": row}
+    return {"enrollment": enrich_enrollment_finance(row)}
 
 
 @app.post("/enrollments", status_code=201)
@@ -1802,11 +1985,7 @@ async def create_payment(body: PaymentCreate, user: dict = FinanceDep):
     )
 
     if body.registration_ref and body.status == "paid":
-        execute(
-            """UPDATE Registration SET FinancialStatus = N'settled'
-               WHERE Id = ?""",
-            (body.registration_ref,),
-        )
+        sync_registration_financial_status(body.registration_ref)
         execute(
             """UPDATE Registration SET Status = N'active'
                WHERE Id = ? AND Status = N'pending_payment'""",

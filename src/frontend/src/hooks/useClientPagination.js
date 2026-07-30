@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 
-export const PAGE_SIZE = 50
+export const PAGE_SIZE = 20
 
 /**
- * صفحه‌بندی سمت کلاینت — ۵۰ رکورد در هر صفحه
+ * صفحه‌بندی سمت کلاینت — ۲۰ رکورد در هر صفحه
  */
 export function useClientPagination(items, pageSize = PAGE_SIZE) {
   const [page, setPage] = useState(1)

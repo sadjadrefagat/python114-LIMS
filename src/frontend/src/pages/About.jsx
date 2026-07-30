@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 
-const DESIGN_TEAM = [
+const TEAM_WOMEN = [
   {
     name: 'اسرا رهبران',
     role: 'Product Designer',
@@ -22,6 +22,9 @@ const DESIGN_TEAM = [
     email: 'vahideh.seyedi@lims.dev',
     avatar: '/avatars/avatar-vahideh.jpg',
   },
+]
+
+const TEAM_MEN = [
   {
     name: 'امیررضا حسنی',
     role: 'Backend Engineer',
@@ -47,13 +50,16 @@ const DESIGN_TEAM = [
 
 const TEAM_LEAD = {
   name: 'سجاد رفاقت',
-  role: 'Tech Lead & Product Owner',
-  roleFa: 'راهبر فنی و مدیر محصول',
+  titles: ['راهبر تیم', 'مدیر محصول', 'طراح و معمار ارشد نرم‌افزار'],
   email: 'sadjadrefagat@gmail.com',
   avatar: '/avatars/avatar-sadjad.jpg?v=4',
 }
 
 function Person({ person, featured = false }) {
+  const titles = person.titles?.length
+    ? person.titles
+    : [person.roleFa, person.role].filter(Boolean)
+
   return (
     <article className={`about-person ${featured ? 'is-featured' : ''} fade-up`}>
       <div className="about-avatar-wrap">
@@ -67,10 +73,11 @@ function Person({ person, featured = false }) {
         />
       </div>
       <h3 className="about-person-name">{person.name}</h3>
-      <p className="about-person-role">
-        <span className="about-role-fa">{person.roleFa}</span>
-        <span className="about-role-en">{person.role}</span>
-      </p>
+      <ul className={`about-person-role ${featured ? 'is-titles' : ''}`}>
+        {titles.map((title) => (
+          <li key={title}>{title}</li>
+        ))}
+      </ul>
       <a className="about-person-email" href={`mailto:${person.email}`}>
         {person.email}
       </a>
@@ -84,10 +91,11 @@ export default function About() {
       <section className="about-hero">
         <div className="about-hero-bg" aria-hidden="true" />
         <div className="container about-hero-inner">
-          <p className="about-brand fade-up">آموزشگاه لیمز</p>
-          <h1 className="about-hero-title fade-up">تیمی که سامانه را ساخت</h1>
+          <p className="about-brand fade-up">لیمـز</p>
+          <h1 className="about-hero-title fade-up">سامانه مدیریت آموزشگاه زبان</h1>
           <p className="about-hero-text fade-up-delay">
-            از طراحی تجربه کاربری تا معماری بک‌اند — کسانی که LIMS را زنده نگه می‌دارند.
+            لیمز به آموزشگاه‌ها کمک می‌کند ثبت‌نام، کلاس‌ها، جلسات و مسیر پیشرفت زبان‌آموزان را
+            یکپارچه و شفاف مدیریت کنند.
           </p>
           <div className="about-hero-cta fade-up-delay">
             <a href="#team" className="btn btn-brand btn-lg rounded-pill px-4">
@@ -100,11 +108,25 @@ export default function About() {
         </div>
       </section>
 
+      <section className="about-mission">
+        <div className="container about-mission-inner fade-up">
+          <h2 className="about-mission-title">چشم‌انداز ما</h2>
+          <p className="about-mission-text">
+            آموزشگاه‌های زبان امروز به ابزاری نیاز دارند که عملیات روزمره را ساده کند، نه پیچیده.
+            لیمز با تمرکز بر مدیریت دوره‌ها، ظرفیت کلاس‌ها، ثبت‌نام و پیگیری وضعیت مالی،
+            تصویری روشن از عملکرد آموزشگاه در اختیار مدیران قرار می‌دهد تا تصمیم‌گیری سریع‌تر و
+            دقیق‌تر باشد.
+          </p>
+        </div>
+      </section>
+
       <section className="about-lead-section" id="team">
         <div className="container">
           <div className="about-section-head fade-up">
-            <h2 className="about-section-title">راهبر و مدیر تیم</h2>
-            <p className="about-section-sub">هدایت محصول، اولویت‌بندی بک‌لاگ و هم‌راستایی تیم</p>
+            <h2 className="about-section-title">تیم لیمز</h2>
+            <p className="about-section-sub">
+              متخصصانی که طراحی محصول، توسعه و کیفیت سامانه را پیش می‌برند
+            </p>
           </div>
           <div className="about-lead-stage">
             <Person person={TEAM_LEAD} featured />
@@ -115,26 +137,21 @@ export default function About() {
       <section className="about-team-section">
         <div className="container">
           <div className="about-section-head fade-up">
-            <h2 className="about-section-title">تیم طراحی و توسعه</h2>
-            <p className="about-section-sub">
-              طراحان محصول، مهندسان فرانت‌اند و بک‌اند، و تضمین کیفیت
-            </p>
+            <h2 className="about-section-title">اعضای تیم</h2>
+            <p className="about-section-sub">طراحی، مهندسی نرم‌افزار و تضمین کیفیت</p>
           </div>
-          <div className="about-team-grid">
-            {DESIGN_TEAM.map((person) => (
-              <Person key={person.email} person={person} />
-            ))}
+          <div className="about-team-rows">
+            <div className="about-team-row" aria-label="اعضای تیم — سطر اول">
+              {TEAM_WOMEN.map((person) => (
+                <Person key={person.email} person={person} />
+              ))}
+            </div>
+            <div className="about-team-row" aria-label="اعضای تیم — سطر دوم">
+              {TEAM_MEN.map((person) => (
+                <Person key={person.email} person={person} />
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
-
-      <section className="about-mission">
-        <div className="container about-mission-inner fade-up">
-          <h2 className="about-mission-title">چرا لیمز؟</h2>
-          <p className="about-mission-text">
-            هدف ما یکپارچه‌سازی ثبت‌نام، کلاس‌بندی، حضور و پیشرفت زبان‌آموز در یک سامانه RTL شفاف
-            است — با فونت وزیر، تقویم شمسی، و جریان کاری قابل اتکا برای آموزشگاه.
-          </p>
         </div>
       </section>
     </div>

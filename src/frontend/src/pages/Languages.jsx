@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import Loading from '../components/Loading'
 import PaginationBar from '../components/PaginationBar'
+import RowActions from '../components/RowActions'
 import { useClientPagination } from '../hooks/useClientPagination'
+import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 
 export default function Languages() {
   const empty = { name: '' }
+  const [askConfirm, confirmDialog] = useConfirmDialog()
   const [rows, setRows] = useState([])
   const [form, setForm] = useState(empty)
   const [editId, setEditId] = useState(null)
@@ -14,6 +17,8 @@ export default function Languages() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const formPanelRef = useRef(null)
+  const nameInputRef = useRef(null)
   const paging = useClientPagination(rows)
 
   async function load(q = search) {
@@ -33,6 +38,7 @@ export default function Languages() {
   useEffect(() => {
     const t = setTimeout(() => load(search), 250)
     return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search])
 
   function reset() {
@@ -41,40 +47,65 @@ export default function Languages() {
   }
 
   function startEdit(row) {
-    setEditId(row.Id)
+    const id = Number(row.Id)
+    setEditId(id)
     setForm({ name: row.Name || '' })
     setMessage('')
     setError('')
+    requestAnimationFrame(() => {
+      formPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      nameInputRef.current?.focus()
+      nameInputRef.current?.select()
+    })
   }
 
   async function handleSubmit(e) {
     e.preventDefault()
+    const currentId = editId
+    const name = form.name.trim()
+    if (!name) {
+      setError('نام زبان را وارد کنید')
+      return
+    }
+
     setBusy(true)
     setMessage('')
     setError('')
     try {
-      const payload = { name: form.name.trim() }
-      if (editId) await api.put(`/languages/${editId}`, payload)
-      else await api.post('/languages', payload)
-      setMessage(editId ? 'زبان ویرایش شد' : 'زبان ثبت شد')
+      const payload = { name }
+      if (currentId) {
+        await api.put(`/languages/${currentId}`, payload)
+        setMessage('زبان ویرایش شد')
+      } else {
+        await api.post('/languages', payload)
+        setMessage('زبان ثبت شد')
+      }
       reset()
-      await load('')
-      setSearch('')
+      await load(search)
     } catch (err) {
-      setError(err.message)
+      setError(err.message || 'خطا در ذخیره زبان')
     } finally {
       setBusy(false)
     }
   }
 
   async function handleDelete(row) {
-    if (!window.confirm(`حذف زبان «${row.Name}»؟`)) return
+    const ok = await askConfirm({
+      title: 'حذف زبان',
+      message: 'با حذف این زبان، در صورت وابستگی به سطح یا دوره ممکن است عملیات رد شود.',
+      confirmLabel: 'حذف زبان',
+      details: [
+        { label: 'نام زبان', value: row.Name },
+        { label: 'شناسه', value: row.Id },
+      ],
+    })
+    if (!ok) return
     setError('')
     setMessage('')
     try {
       await api.delete(`/languages/${row.Id}`)
       setMessage('زبان حذف شد')
-      if (editId === row.Id) reset()
+      if (editId === row.Id || editId === Number(row.Id)) reset()
       await load(search)
     } catch (err) {
       setError(err.message)
@@ -83,6 +114,7 @@ export default function Languages() {
 
   return (
     <div className="container py-4">
+      {confirmDialog}
       <div className="page-head d-flex flex-wrap justify-content-between gap-2">
         <div>
           <h1 className="section-title h3 mb-1">زبان‌ها</h1>
@@ -97,12 +129,17 @@ export default function Languages() {
         />
       </div>
 
-      <div className="create-panel">
+      <div
+        className={`create-panel ${editId ? 'is-editing' : ''}`}
+        ref={formPanelRef}
+      >
         <div className="d-flex justify-content-between align-items-center mb-3">
-          <h2 className="h6 fw-bold mb-0">{editId ? `ویرایش زبان #${editId}` : 'ثبت زبان جدید'}</h2>
+          <h2 className="h6 fw-bold mb-0">
+            {editId ? `ویرایش زبان #${editId}` : 'ثبت زبان جدید'}
+          </h2>
           {editId && (
             <button type="button" className="btn btn-sm btn-outline-secondary rounded-pill" onClick={reset}>
-              انصراف
+              انصراف از ویرایش
             </button>
           )}
         </div>
@@ -110,15 +147,17 @@ export default function Languages() {
           <div className="col-md-8">
             <label className="form-label">نام زبان</label>
             <input
+              ref={nameInputRef}
               className="form-control"
               value={form.name}
               onChange={(e) => setForm({ name: e.target.value })}
               required
+              maxLength={50}
             />
           </div>
           <div className="col-md-4 d-grid">
-            <button className="btn btn-brand rounded-pill" disabled={busy}>
-              {busy ? '...' : editId ? 'ذخیره' : 'ثبت زبان'}
+            <button type="submit" className="btn btn-brand rounded-pill" disabled={busy}>
+              {busy ? '...' : editId ? 'ذخیره تغییرات' : 'ثبت زبان'}
             </button>
           </div>
         </form>
@@ -140,16 +179,11 @@ export default function Languages() {
             </thead>
             <tbody>
               {paging.slice.map((row) => (
-                <tr key={row.Id}>
+                <tr key={row.Id} className={editId === Number(row.Id) ? 'table-row-editing' : undefined}>
                   <td>{row.Id}</td>
                   <td>{row.Name}</td>
                   <td className="text-nowrap">
-                    <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEdit(row)}>
-                      ویرایش
-                    </button>
-                    <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => handleDelete(row)}>
-                      حذف
-                    </button>
+                    <RowActions onEdit={() => startEdit(row)} onDelete={() => handleDelete(row)} />
                   </td>
                 </tr>
               ))}

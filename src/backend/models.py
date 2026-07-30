@@ -660,7 +660,7 @@ class TeacherUpdate(BaseModel):
 EnrollmentStatus = Literal[
     "pending_payment", "pending_approval", "active", "frozen", "completed", "withdrawn", "transferred"
 ]
-FinancialStatus = Literal["debtor", "settled", "partial"]
+FinancialStatus = Literal["debtor", "creditor", "settled"]
 PaymentStatus = Literal["draft", "pending", "paid", "failed", "refunded", "partially_paid", "overdue"]
 PaymentMethod = Literal["cash", "card", "online", "installment", "other"]
 ExamType = Literal["placement", "midterm", "final", "quiz", "assignment"]

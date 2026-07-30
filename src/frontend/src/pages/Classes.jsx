@@ -5,7 +5,9 @@ import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
 import JalaliDatePicker, { compareJalali, todayJalaliString } from '../components/JalaliDatePicker'
 import PaginationBar from '../components/PaginationBar'
+import RowActions from '../components/RowActions'
 import { useClientPagination } from '../hooks/useClientPagination'
+import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 
 const statusMap = {
   draft: 'پیش‌نویس',
@@ -34,6 +36,7 @@ const emptyForm = {
 export default function Classes() {
   const { hasRole } = useAuth()
   const canCreate = hasRole('admin', 'secretary')
+  const [askConfirm, confirmDialog] = useConfirmDialog()
   const [rows, setRows] = useState([])
   const [courses, setCourses] = useState([])
   const [teachers, setTeachers] = useState([])
@@ -187,7 +190,20 @@ export default function Classes() {
   }
 
   async function handleDelete(row) {
-    if (!window.confirm(`حذف کلاس #${row.Id} (${row.CourseName})؟`)) return
+    const ok = await askConfirm({
+      title: 'لغو کلاس',
+      message: 'این کلاس لغو می‌شود و از فهرست کلاس‌های فعال خارج خواهد شد.',
+      confirmLabel: 'لغو کلاس',
+      details: [
+        { label: 'شناسه', value: `#${row.Id}` },
+        { label: 'دوره', value: row.CourseName },
+        { label: 'مدرس', value: row.TeacherName },
+        { label: 'شروع', value: row.StartDate },
+        { label: 'ظرفیت', value: row.Capacity },
+        { label: 'وضعیت', value: statusMap[row.Status] || row.Status },
+      ],
+    })
+    if (!ok) return
     setError('')
     setMessage('')
     try {
@@ -202,6 +218,7 @@ export default function Classes() {
 
   return (
     <div className="container py-4">
+      {confirmDialog}
       <div className="page-head d-flex justify-content-between flex-wrap gap-2">
         <div>
           <h1 className="section-title h3 mb-1">کلاس‌ها</h1>
@@ -401,22 +418,7 @@ export default function Classes() {
                   </td>
                   <td className="text-nowrap">
                     {canCreate && (
-                      <>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-outline-success rounded-pill me-1"
-                          onClick={() => startEdit(row)}
-                        >
-                          ویرایش
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-outline-danger rounded-pill"
-                          onClick={() => handleDelete(row)}
-                        >
-                          حذف
-                        </button>
-                      </>
+                      <RowActions onEdit={() => startEdit(row)} onDelete={() => handleDelete(row)} />
                     )}
                   </td>
                 </tr>

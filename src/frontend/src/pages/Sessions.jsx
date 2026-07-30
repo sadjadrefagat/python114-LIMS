@@ -7,7 +7,9 @@ import JalaliDatePicker, {
   todayJalaliString,
 } from '../components/JalaliDatePicker'
 import PaginationBar from '../components/PaginationBar'
+import RowActions from '../components/RowActions'
 import { useClientPagination } from '../hooks/useClientPagination'
+import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 
 const emptyForm = {
   class_ref: '',
@@ -42,6 +44,7 @@ function isValidTime(value) {
 }
 
 export default function Sessions() {
+  const [askConfirm, confirmDialog] = useConfirmDialog()
   const [rows, setRows] = useState([])
   const [classes, setClasses] = useState([])
   const [sessionTypes, setSessionTypes] = useState([])
@@ -181,7 +184,26 @@ export default function Sessions() {
   }
 
   async function handleDelete(row) {
-    if (!window.confirm(`حذف جلسه #${row.Id} (${row.CourseName})؟`)) return
+    const ok = await askConfirm({
+      title: 'لغو جلسه',
+      message: 'این جلسه لغو می‌شود و از برنامهٔ فعال خارج خواهد شد.',
+      confirmLabel: 'لغو جلسه',
+      details: [
+        { label: 'شناسه', value: `#${row.Id}` },
+        { label: 'دوره', value: row.CourseName },
+        { label: 'تاریخ', value: row.Date },
+        {
+          label: 'ساعت',
+          value:
+            row.StartTime || row.EndTime
+              ? `${normalizeTime(row.StartTime) || '—'} تا ${normalizeTime(row.EndTime) || '—'}`
+              : null,
+        },
+        { label: 'نوع جلسه', value: row.SessionTypeName },
+        { label: 'وضعیت', value: STATUS_LABEL[row.Status] || row.Status },
+      ],
+    })
+    if (!ok) return
     setError('')
     setMessage('')
     try {
@@ -196,6 +218,7 @@ export default function Sessions() {
 
   return (
     <div className="container py-4">
+      {confirmDialog}
       <div className="page-head d-flex flex-wrap justify-content-between align-items-end gap-2">
         <div>
           <h1 className="section-title h3 mb-1">جلسات</h1>
@@ -384,20 +407,7 @@ export default function Sessions() {
                     <td>{row.SessionTypeName}</td>
                     <td>{STATUS_LABEL[row.Status] || row.Status}</td>
                     <td className="text-nowrap">
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline-success rounded-pill me-1"
-                        onClick={() => startEdit(row)}
-                      >
-                        ویرایش
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline-danger rounded-pill"
-                        onClick={() => handleDelete(row)}
-                      >
-                        حذف
-                      </button>
+                      <RowActions onEdit={() => startEdit(row)} onDelete={() => handleDelete(row)} />
                     </td>
                   </tr>
                 ))}

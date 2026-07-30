@@ -38,11 +38,19 @@ async function request(path, options = {}) {
     headers.Authorization = `Bearer ${tokens.access_token}`
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  })
+  let response
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    })
+  } catch (err) {
+    const error = new Error('ارتباط با سرور برقرار نشد. مطمئن شوید بک‌اند روی پورت ۸۰۰۰ اجراست.')
+    error.status = 0
+    error.cause = err
+    throw error
+  }
 
   let data = null
   const text = await response.text()
@@ -75,10 +83,14 @@ async function request(path, options = {}) {
         })
         .filter(Boolean)
         .join('، ')
-    } else if (typeof detail === 'string') {
+    } else if (typeof detail === 'string' && detail.trim()) {
       message = detail
+    } else if (typeof data?.message === 'string' && data.message.trim()) {
+      message = data.message
+    } else if (response.status === 502 || response.status === 503 || response.status === 504) {
+      message = 'سرور در دسترس نیست. چند لحظه بعد دوباره تلاش کنید.'
     } else {
-      message = data?.message || 'خطایی رخ داد'
+      message = `خطایی رخ داد (کد ${response.status})`
     }
     // اگر هنوز پیام انگلیسی خام ماند، پیام کلی فارسی
     if (/string does not match|string_type|field required|value is not/i.test(message)) {
@@ -98,6 +110,42 @@ export const api = {
   post: (path, body, options) => request(path, { ...options, method: 'POST', body }),
   put: (path, body, options) => request(path, { ...options, method: 'PUT', body }),
   delete: (path, options) => request(path, { ...options, method: 'DELETE' }),
+  async upload(path, formData, options = {}) {
+    const tokens = getTokens()
+    const headers = {
+      Accept: 'application/json',
+      ...(options.headers || {}),
+    }
+    if (tokens?.access_token && !options.skipAuth) {
+      headers.Authorization = `Bearer ${tokens.access_token}`
+    }
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: options.method || 'POST',
+      headers,
+      body: formData,
+    })
+    let data = null
+    const text = await response.text()
+    if (text) {
+      try {
+        data = JSON.parse(text)
+      } catch {
+        data = { detail: text }
+      }
+    }
+    if (!response.ok) {
+      const detail = data?.detail
+      const message =
+        typeof detail === 'string'
+          ? detail
+          : data?.message || 'خطایی در بارگذاری فایل رخ داد'
+      const error = new Error(message)
+      error.status = response.status
+      error.data = data
+      throw error
+    }
+    return data
+  },
 }
 
 export const authStorage = {

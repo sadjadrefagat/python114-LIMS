@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { api } from '../api/client'
+import { api, formatMoney } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
 import PaginationBar from '../components/PaginationBar'
 import { useClientPagination } from '../hooks/useClientPagination'
+import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 import CourseCard from '../components/CourseCard'
 const TEACHING_METHODS = [
   { value: 'حضوری', label: 'حضوری' },
@@ -40,6 +41,7 @@ const emptyForm = {
 export default function Courses() {
   const { hasRole } = useAuth()
   const canCreate = hasRole('admin', 'secretary')
+  const [askConfirm, confirmDialog] = useConfirmDialog()
   const [courses, setCourses] = useState([])
   const [languages, setLanguages] = useState([])
   const [levels, setLevels] = useState([])
@@ -157,7 +159,21 @@ export default function Courses() {
   }
 
   async function handleDelete(course) {
-    if (!window.confirm(`حذف دوره «${course.Name}»؟`)) return
+    const ok = await askConfirm({
+      title: 'حذف دوره',
+      message: 'این دوره آرشیو می‌شود و از کاتالوگ فعال خارج خواهد شد.',
+      confirmLabel: 'آرشیو دوره',
+      details: [
+        { label: 'نام دوره', value: course.Name },
+        { label: 'زبان', value: course.LanguageName },
+        { label: 'سطح', value: course.LevelName },
+        { label: 'جلسات', value: course.SessionsCount != null ? `${course.SessionsCount} جلسه` : null },
+        { label: 'گروه سنی', value: course.AgeGroup },
+        { label: 'شیوه آموزش', value: course.TeachingMethod },
+        { label: 'هزینه', value: course.Cost != null ? formatMoney(course.Cost) : null },
+      ],
+    })
+    if (!ok) return
     setError('')
     setMessage('')
     try {
@@ -172,6 +188,7 @@ export default function Courses() {
 
   return (
     <div className="container py-4">
+      {confirmDialog}
       <div className="page-head d-flex flex-wrap justify-content-between align-items-end gap-3">
         <div>
           <h1 className="section-title h3 mb-1">کاتالوگ دوره‌ها</h1>

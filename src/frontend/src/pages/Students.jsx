@@ -4,7 +4,9 @@ import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
 import JalaliDatePicker, { todayJalaliString } from '../components/JalaliDatePicker'
 import PaginationBar from '../components/PaginationBar'
+import RowActions from '../components/RowActions'
 import { useClientPagination } from '../hooks/useClientPagination'
+import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 import { isValidMobile, MOBILE_ERROR, MOBILE_HINT, normalizeMobileInput } from '../utils/mobile'
 
 const emptyForm = {
@@ -20,6 +22,7 @@ const emptyForm = {
 }
 
 export default function Students() {
+  const [askConfirm, confirmDialog] = useConfirmDialog()
   const [rows, setRows] = useState([])
   const [languages, setLanguages] = useState([])
   const [search, setSearch] = useState('')
@@ -134,7 +137,18 @@ export default function Students() {
   }
 
   async function handleDelete(row) {
-    if (!window.confirm(`حذف زبان‌آموز «${row.FirstName} ${row.LastName}»؟`)) return
+    const ok = await askConfirm({
+      title: 'حذف زبان‌آموز',
+      message: 'این زبان‌آموز آرشیو می‌شود و از فهرست فعال خارج خواهد شد.',
+      confirmLabel: 'آرشیو زبان‌آموز',
+      details: [
+        { label: 'نام', value: `${row.FirstName || ''} ${row.LastName || ''}`.trim() },
+        { label: 'موبایل', value: row.Mobile },
+        { label: 'زبان هدف', value: row.TargetLanguageName },
+        { label: 'کد ملی', value: row.NationalCode },
+      ],
+    })
+    if (!ok) return
     setError('')
     setMessage('')
     try {
@@ -149,6 +163,7 @@ export default function Students() {
 
   return (
     <div className="container py-4">
+      {confirmDialog}
       <div className="page-head d-flex flex-wrap justify-content-between gap-3">
         <div>
           <h1 className="section-title h3 mb-1">زبان‌آموزان</h1>
@@ -278,12 +293,7 @@ export default function Students() {
                   <td>{row.TargetLanguageName || '—'}</td>
                   <td>{row.CurrentLevelName || '—'}</td>
                   <td className="text-nowrap">
-                    <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEdit(row)}>
-                      ویرایش
-                    </button>
-                    <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => handleDelete(row)}>
-                      حذف
-                    </button>
+                    <RowActions onEdit={() => startEdit(row)} onDelete={() => handleDelete(row)} />
                   </td>
                 </tr>
               ))}

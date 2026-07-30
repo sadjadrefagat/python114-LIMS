@@ -4,7 +4,10 @@ import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
 import JalaliDatePicker from '../components/JalaliDatePicker'
 import PaginationBar from '../components/PaginationBar'
+import RowActions from '../components/RowActions'
+import FinanceStatus, { financeStatusLabel, financeStatusOptions } from '../components/FinanceStatus'
 import { useClientPagination } from '../hooks/useClientPagination'
+import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 
 const statusMap = {
   pending_payment: 'در انتظار پرداخت',
@@ -14,12 +17,6 @@ const statusMap = {
   completed: 'تکمیل‌شده',
   withdrawn: 'انصراف',
   transferred: 'انتقال',
-}
-
-const financeMap = {
-  debtor: 'بدهکار',
-  settled: 'تسویه‌شده',
-  partial: 'جزئی',
 }
 
 const emptyForm = {
@@ -33,6 +30,7 @@ const emptyForm = {
 }
 
 export default function Enrollments() {
+  const [askConfirm, confirmDialog] = useConfirmDialog()
   const [rows, setRows] = useState([])
   const [students, setStudents] = useState([])
   const [classes, setClasses] = useState([])
@@ -143,7 +141,20 @@ export default function Enrollments() {
   }
 
   async function handleDelete(row) {
-    if (!window.confirm(`لغو ثبت‌نام «${row.StudentName}» در «${row.CourseName}»؟`)) return
+    const ok = await askConfirm({
+      title: 'لغو ثبت‌نام',
+      message: 'وضعیت این ثبت‌نام به «انصراف» تغییر می‌کند.',
+      confirmLabel: 'ثبت انصراف',
+      details: [
+        { label: 'زبان‌آموز', value: row.StudentName },
+        { label: 'دوره', value: row.CourseName },
+        { label: 'کلاس', value: row.ClassRef ? `#${row.ClassRef}` : null },
+        { label: 'وضعیت', value: statusMap[row.Status] || row.Status },
+        { label: 'مالی', value: financeStatusLabel(row.FinancialStatus) },
+        { label: 'تاریخ', value: row.Date },
+      ],
+    })
+    if (!ok) return
     setError('')
     setMessage('')
     try {
@@ -163,6 +174,7 @@ export default function Enrollments() {
 
   return (
     <div className="container py-4">
+      {confirmDialog}
       <div className="page-head d-flex justify-content-between flex-wrap gap-2">
         <div>
           <h1 className="section-title h3 mb-1">ثبت‌نام‌ها</h1>
@@ -256,7 +268,7 @@ export default function Enrollments() {
               <VazirSelect
                 value={form.financial_status}
                 onChange={(v) => setForm((p) => ({ ...p, financial_status: v }))}
-                options={Object.entries(financeMap).map(([value, label]) => ({ value, label }))}
+                options={financeStatusOptions}
               />
             </div>
             {editId && form.status === 'withdrawn' && (
@@ -320,18 +332,18 @@ export default function Enrollments() {
                   <td>
                     <span className="chip chip-teal">{statusMap[row.Status] || row.Status}</span>
                   </td>
-                  <td>
-                    <span className="chip chip-coral">
-                      {financeMap[row.FinancialStatus] || row.FinancialStatus}
-                    </span>
+                  <td style={{ minWidth: 160 }}>
+                    <FinanceStatus
+                      compact
+                      status={row.FinancialStatus}
+                      intensity={row.FinanceIntensity}
+                      courseCost={row.CourseCost}
+                      paidAmount={row.PaidAmount}
+                      balance={row.Balance}
+                    />
                   </td>
                   <td className="text-nowrap">
-                    <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEdit(row)}>
-                      ویرایش
-                    </button>
-                    <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => handleDelete(row)}>
-                      حذف
-                    </button>
+                    <RowActions onEdit={() => startEdit(row)} onDelete={() => handleDelete(row)} />
                   </td>
                 </tr>
               ))}

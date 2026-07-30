@@ -251,6 +251,12 @@ GO
 IF COL_LENGTH('dbo.Teacher', 'CreatedAt') IS NULL
     ALTER TABLE dbo.Teacher ADD [CreatedAt] DATETIME2 NOT NULL CONSTRAINT [DF_Teacher_CreatedAt] DEFAULT (SYSUTCDATETIME());
 GO
+IF COL_LENGTH('dbo.Teacher', 'Photo') IS NULL
+    ALTER TABLE dbo.Teacher ADD [Photo] VARBINARY(MAX) NULL;
+GO
+IF COL_LENGTH('dbo.Teacher', 'PhotoMime') IS NULL
+    ALTER TABLE dbo.Teacher ADD [PhotoMime] VARCHAR(100) NULL;
+GO
 
 IF OBJECT_ID(N'dbo.TRG_PreventDeleteTeacher', N'TR') IS NULL
 BEGIN
@@ -335,7 +341,13 @@ IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Registratio
 GO
 IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Registration_FinancialStatus')
     ALTER TABLE dbo.Registration ADD CONSTRAINT [CK_Registration_FinancialStatus]
-    CHECK ([FinancialStatus] IN (N'debtor', N'settled', N'partial'));
+    CHECK ([FinancialStatus] IN (N'debtor', N'creditor', N'settled'));
+GO
+/* مهاجرت وضعیت جزئی → بدهکار و افزودن بستانکار */
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Registration_FinancialStatus')
+BEGIN
+    UPDATE dbo.Registration SET FinancialStatus = N'debtor' WHERE FinancialStatus = N'partial';
+END
 GO
 
 /* ========== Payment ========== */
