@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import JalaliDatePicker, { todayJalaliString } from '../components/JalaliDatePicker'
 import VazirSelect from '../components/VazirSelect'
+import { isValidMobile, MOBILE_ERROR, MOBILE_HINT, normalizeMobileInput } from '../utils/mobile'
 
 const initialForm = {
   username: '',
@@ -110,6 +111,10 @@ export default function Register() {
     }
     if (!/^\d{10}$/.test(form.national_code)) {
       setError('کد ملی باید دقیقاً ۱۰ رقم باشد')
+      return
+    }
+    if (!isValidMobile(form.mobile)) {
+      setError(MOBILE_ERROR)
       return
     }
     if (!form.birth_date) {
@@ -227,10 +232,15 @@ export default function Register() {
               id="reg-mobile"
               className="form-control"
               value={form.mobile}
-              onChange={(e) => update('mobile', e.target.value)}
-              placeholder="0912..."
+              onChange={(e) => update('mobile', normalizeMobileInput(e.target.value))}
+              placeholder="09123456789"
+              inputMode="numeric"
+              maxLength={11}
+              pattern="09[0-9]{9}"
+              title={MOBILE_HINT}
               required
             />
+            <div className="form-text">{MOBILE_HINT}</div>
           </div>
           <div className="col-md-6">
             <label className="form-label">تاریخ تولد شمسی</label>

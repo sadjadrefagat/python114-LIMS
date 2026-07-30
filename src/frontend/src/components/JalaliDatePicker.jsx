@@ -145,9 +145,16 @@ function weekdayIndex(jy, jm, jd) {
   return (d + 1) % 7 // شنبه=0
 }
 
+const YEAR_PAGE_SIZE = 12
+
+function yearPageStart(jy) {
+  return Math.floor(jy / YEAR_PAGE_SIZE) * YEAR_PAGE_SIZE
+}
+
 /**
  * انتخابگر تاریخ شمسی — یک فیلد + تقویم پاپ‌آپ
  * خروجی: YYYY/MM/DD
+ * کلیک روی ماه/سال در عنوان → نمای انتخاب ماه یا سال
  */
 export default function JalaliDatePicker({
   value = '',
@@ -163,14 +170,20 @@ export default function JalaliDatePicker({
   const parsed = parseJalali(value)
   const today = currentJalali()
   const [open, setOpen] = useState(false)
+  const [viewMode, setViewMode] = useState('days') // days | months | years
   const [viewYear, setViewYear] = useState(parsed?.jy || today.jy)
   const [viewMonth, setViewMonth] = useState(parsed?.jm || today.jm)
+  const [yearPage, setYearPage] = useState(yearPageStart(parsed?.jy || today.jy))
+
+  const minParsed = useMemo(() => parseJalali(minDate), [minDate])
+  const maxParsed = useMemo(() => parseJalali(maxDate), [maxDate])
 
   useEffect(() => {
     const p = parseJalali(value)
     if (p) {
       setViewYear(p.jy)
       setViewMonth(p.jm)
+      setYearPage(yearPageStart(p.jy))
     }
   }, [value])
 
@@ -180,7 +193,10 @@ export default function JalaliDatePicker({
       if (!rootRef.current?.contains(e.target)) setOpen(false)
     }
     function onEsc(e) {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key !== 'Escape') return
+      if (viewMode === 'years') setViewMode('months')
+      else if (viewMode === 'months') setViewMode('days')
+      else setOpen(false)
     }
     document.addEventListener('mousedown', onDoc)
     document.addEventListener('keydown', onEsc)
@@ -188,7 +204,7 @@ export default function JalaliDatePicker({
       document.removeEventListener('mousedown', onDoc)
       document.removeEventListener('keydown', onEsc)
     }
-  }, [open])
+  }, [open, viewMode])
 
   const cells = useMemo(() => {
     const len = jalaliMonthLength(viewYear, viewMonth)
@@ -200,6 +216,12 @@ export default function JalaliDatePicker({
     return list
   }, [viewYear, viewMonth])
 
+  const yearCells = useMemo(() => {
+    const list = []
+    for (let i = 0; i < YEAR_PAGE_SIZE; i += 1) list.push(yearPage + i)
+    return list
+  }, [yearPage])
+
   function isDisabledDay(d) {
     if (!d) return true
     const dateStr = formatJalali(viewYear, viewMonth, d)
@@ -208,11 +230,42 @@ export default function JalaliDatePicker({
     return false
   }
 
+  function isYearDisabled(jy) {
+    if (minParsed && jy < minParsed.jy) return true
+    if (maxParsed && jy > maxParsed.jy) return true
+    return false
+  }
+
+  function isMonthDisabled(jm) {
+    if (minParsed) {
+      if (viewYear < minParsed.jy) return true
+      if (viewYear === minParsed.jy && jm < minParsed.jm) return true
+    }
+    if (maxParsed) {
+      if (viewYear > maxParsed.jy) return true
+      if (viewYear === maxParsed.jy && jm > maxParsed.jm) return true
+    }
+    return false
+  }
+
   function pickDay(d) {
     if (isDisabledDay(d)) return
     const next = formatJalali(viewYear, viewMonth, d)
     onChange?.(next)
     setOpen(false)
+  }
+
+  function pickMonth(jm) {
+    if (isMonthDisabled(jm)) return
+    setViewMonth(jm)
+    setViewMode('days')
+  }
+
+  function pickYear(jy) {
+    if (isYearDisabled(jy)) return
+    setViewYear(jy)
+    setYearPage(yearPageStart(jy))
+    setViewMode('months')
   }
 
   function shiftMonth(delta) {
@@ -227,6 +280,17 @@ export default function JalaliDatePicker({
     }
     setViewYear(y)
     setViewMonth(m)
+    setYearPage(yearPageStart(y))
+  }
+
+  function shiftYear(delta) {
+    const y = viewYear + delta
+    setViewYear(y)
+    setYearPage(yearPageStart(y))
+  }
+
+  function shiftYearPage(delta) {
+    setYearPage((p) => p + delta * YEAR_PAGE_SIZE)
   }
 
   function goToday() {
@@ -236,6 +300,8 @@ export default function JalaliDatePicker({
     if (maxDate && compareJalali(next, maxDate) > 0) return
     setViewYear(t.jy)
     setViewMonth(t.jm)
+    setYearPage(yearPageStart(t.jy))
+    setViewMode('days')
     onChange?.(next)
     setOpen(false)
   }
@@ -244,6 +310,32 @@ export default function JalaliDatePicker({
     e.stopPropagation()
     onChange?.('')
   }
+
+  function openPicker() {
+    if (disabled) return
+    const p = parseJalali(value)
+    const base = p || today
+    setViewYear(base.jy)
+    setViewMonth(base.jm)
+    setYearPage(yearPageStart(base.jy))
+    setViewMode('days')
+    setOpen((v) => !v)
+  }
+
+  function navPrev() {
+    if (viewMode === 'days') shiftMonth(-1)
+    else if (viewMode === 'months') shiftYear(-1)
+    else shiftYearPage(-1)
+  }
+
+  function navNext() {
+    if (viewMode === 'days') shiftMonth(1)
+    else if (viewMode === 'months') shiftYear(1)
+    else shiftYearPage(1)
+  }
+
+  const navPrevLabel = viewMode === 'years' ? 'دوره قبل' : viewMode === 'months' ? 'سال قبل' : 'ماه قبل'
+  const navNextLabel = viewMode === 'years' ? 'دوره بعد' : viewMode === 'months' ? 'سال بعد' : 'ماه بعد'
 
   const display = value || ''
   const todayStr = todayJalaliString()
@@ -268,7 +360,7 @@ export default function JalaliDatePicker({
         disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => !disabled && setOpen((v) => !v)}
+        onClick={openPicker}
       >
         <i className="bi bi-calendar3 jalali-picker-icon" />
         <span>{display || placeholder}</span>
@@ -288,43 +380,132 @@ export default function JalaliDatePicker({
       {open && !disabled && (
         <div className="jalali-calendar" role="dialog" aria-label="تقویم شمسی">
           <div className="jalali-calendar-head">
-            <button type="button" className="jalali-nav-btn" onClick={() => shiftMonth(-1)} aria-label="ماه قبل">
+            <button type="button" className="jalali-nav-btn" onClick={navPrev} aria-label={navPrevLabel}>
               <i className="bi bi-chevron-right" />
             </button>
+
             <div className="jalali-calendar-title">
-              {MONTHS[viewMonth - 1]} {viewYear}
+              {viewMode === 'days' && (
+                <>
+                  <button
+                    type="button"
+                    className="jalali-title-btn"
+                    onClick={() => setViewMode('months')}
+                    aria-label="انتخاب ماه"
+                  >
+                    {MONTHS[viewMonth - 1]}
+                  </button>
+                  <button
+                    type="button"
+                    className="jalali-title-btn"
+                    onClick={() => {
+                      setYearPage(yearPageStart(viewYear))
+                      setViewMode('years')
+                    }}
+                    aria-label="انتخاب سال"
+                  >
+                    {viewYear}
+                  </button>
+                </>
+              )}
+              {viewMode === 'months' && (
+                <button
+                  type="button"
+                  className="jalali-title-btn"
+                  onClick={() => {
+                    setYearPage(yearPageStart(viewYear))
+                    setViewMode('years')
+                  }}
+                  aria-label="انتخاب سال"
+                >
+                  {viewYear}
+                </button>
+              )}
+              {viewMode === 'years' && (
+                <span className="jalali-title-range">
+                  {yearPage} – {yearPage + YEAR_PAGE_SIZE - 1}
+                </span>
+              )}
             </div>
-            <button type="button" className="jalali-nav-btn" onClick={() => shiftMonth(1)} aria-label="ماه بعد">
+
+            <button type="button" className="jalali-nav-btn" onClick={navNext} aria-label={navNextLabel}>
               <i className="bi bi-chevron-left" />
             </button>
           </div>
 
-          <div className="jalali-weekdays">
-            {WEEKDAYS.map((w) => (
-              <span key={w}>{w}</span>
-            ))}
-          </div>
+          {viewMode === 'days' && (
+            <>
+              <div className="jalali-weekdays">
+                {WEEKDAYS.map((w) => (
+                  <span key={w}>{w}</span>
+                ))}
+              </div>
 
-          <div className="jalali-days">
-            {cells.map((d, idx) => {
-              if (!d) return <span key={`e-${idx}`} className="jalali-day is-empty" />
-              const dateStr = formatJalali(viewYear, viewMonth, d)
-              const selected = value === dateStr
-              const isToday = dateStr === todayStr
-              const off = isDisabledDay(d)
-              return (
-                <button
-                  key={dateStr}
-                  type="button"
-                  className={`jalali-day ${selected ? 'is-selected' : ''} ${isToday ? 'is-today' : ''} ${off ? 'is-disabled' : ''}`}
-                  disabled={off}
-                  onClick={() => pickDay(d)}
-                >
-                  {d}
-                </button>
-              )
-            })}
-          </div>
+              <div className="jalali-days">
+                {cells.map((d, idx) => {
+                  if (!d) return <span key={`e-${idx}`} className="jalali-day is-empty" />
+                  const dateStr = formatJalali(viewYear, viewMonth, d)
+                  const selected = value === dateStr
+                  const isToday = dateStr === todayStr
+                  const off = isDisabledDay(d)
+                  return (
+                    <button
+                      key={dateStr}
+                      type="button"
+                      className={`jalali-day ${selected ? 'is-selected' : ''} ${isToday ? 'is-today' : ''} ${off ? 'is-disabled' : ''}`}
+                      disabled={off}
+                      onClick={() => pickDay(d)}
+                    >
+                      {d}
+                    </button>
+                  )
+                })}
+              </div>
+            </>
+          )}
+
+          {viewMode === 'months' && (
+            <div className="jalali-months">
+              {MONTHS.map((name, idx) => {
+                const jm = idx + 1
+                const selected = parsed?.jy === viewYear && parsed?.jm === jm
+                const isCurrent = today.jy === viewYear && today.jm === jm
+                const off = isMonthDisabled(jm)
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    className={`jalali-chip ${selected ? 'is-selected' : ''} ${isCurrent ? 'is-today' : ''} ${off ? 'is-disabled' : ''}`}
+                    disabled={off}
+                    onClick={() => pickMonth(jm)}
+                  >
+                    {name}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {viewMode === 'years' && (
+            <div className="jalali-years">
+              {yearCells.map((jy) => {
+                const selected = parsed?.jy === jy
+                const isCurrent = today.jy === jy
+                const off = isYearDisabled(jy)
+                return (
+                  <button
+                    key={jy}
+                    type="button"
+                    className={`jalali-chip ${selected ? 'is-selected' : ''} ${isCurrent ? 'is-today' : ''} ${off ? 'is-disabled' : ''}`}
+                    disabled={off}
+                    onClick={() => pickYear(jy)}
+                  >
+                    {jy}
+                  </button>
+                )
+              })}
+            </div>
+          )}
 
           <div className="jalali-calendar-foot">
             <button type="button" className="btn btn-sm btn-outline-success rounded-pill" onClick={goToday}>

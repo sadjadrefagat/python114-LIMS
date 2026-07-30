@@ -3,6 +3,9 @@ import { api } from '../api/client'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
 import JalaliDatePicker, { todayJalaliString } from '../components/JalaliDatePicker'
+import PaginationBar from '../components/PaginationBar'
+import { useClientPagination } from '../hooks/useClientPagination'
+import { isValidMobile, MOBILE_ERROR, MOBILE_HINT, normalizeMobileInput } from '../utils/mobile'
 
 const emptyForm = {
   first_name: '',
@@ -28,6 +31,7 @@ export default function Teachers() {
   const [editId, setEditId] = useState(null)
   const today = useMemo(() => todayJalaliString(), [])
   const [form, setForm] = useState(emptyForm)
+  const paging = useClientPagination(rows)
 
   async function load(q = search) {
     setLoading(true)
@@ -80,6 +84,13 @@ export default function Teachers() {
     setBusy(true)
     setError('')
     setMessage('')
+
+    if (!isValidMobile(form.mobile)) {
+      setError(MOBILE_ERROR)
+      setBusy(false)
+      return
+    }
+
     try {
       const payload = {
         first_name: form.first_name.trim(),
@@ -179,7 +190,18 @@ export default function Teachers() {
             </div>
             <div className="col-md-4">
               <label className="form-label">موبایل</label>
-              <input className="form-control" value={form.mobile} onChange={(e) => setForm((p) => ({ ...p, mobile: e.target.value }))} required />
+              <input
+                className="form-control"
+                value={form.mobile}
+                onChange={(e) => setForm((p) => ({ ...p, mobile: normalizeMobileInput(e.target.value) }))}
+                placeholder="09123456789"
+                inputMode="numeric"
+                maxLength={11}
+                pattern="09[0-9]{9}"
+                title={MOBILE_HINT}
+                required
+              />
+              <div className="form-text">{MOBILE_HINT}</div>
             </div>
             <div className="col-md-4">
               <label className="form-label">جنسیت</label>
@@ -219,8 +241,8 @@ export default function Teachers() {
       {loading ? (
         <Loading />
       ) : (
-        <div className="row g-3">
-          {rows.map((row) => (
+        <div className="row g-3 grid-zebra">
+          {paging.slice.map((row) => (
             <div className="col-md-6 col-lg-4" key={row.Id}>
               <div className="course-tile">
                 <h2 className="h5 fw-bold mb-1">
@@ -243,6 +265,17 @@ export default function Teachers() {
             </div>
           ))}
           {!rows.length && <div className="empty-state col-12">مدرسی یافت نشد.</div>}
+          <div className="col-12">
+            <PaginationBar
+              page={paging.page}
+              totalPages={paging.totalPages}
+              total={paging.total}
+              pageSize={paging.pageSize}
+              from={paging.from}
+              to={paging.to}
+              onChange={paging.setPage}
+            />
+          </div>
         </div>
       )}
     </div>

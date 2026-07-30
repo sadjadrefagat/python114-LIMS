@@ -62,6 +62,11 @@ export default function Navbar({
                 دوره‌ها
               </NavLink>
             </li>
+            <li className="nav-item">
+              <NavLink className="nav-link" to="/about">
+                درباره ما
+              </NavLink>
+            </li>
             {isAuthenticated && (
               <li className="nav-item">
                 <NavLink className="nav-link" to="/dashboard">

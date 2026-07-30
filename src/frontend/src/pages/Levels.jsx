@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
+import PaginationBar from '../components/PaginationBar'
+import { useClientPagination } from '../hooks/useClientPagination'
 
 const empty = {
   language_ref: '',
@@ -20,6 +22,7 @@ export default function Levels() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const paging = useClientPagination(rows)
 
   async function load(q = search) {
     setLoading(true)
@@ -182,7 +185,7 @@ export default function Levels() {
         <Loading />
       ) : (
         <div className="panel table-responsive">
-          <table className="table mb-0 align-middle">
+          <table className="table table-zebra mb-0 align-middle">
             <thead>
               <tr>
                 <th>زبان</th>
@@ -193,7 +196,7 @@ export default function Levels() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {paging.slice.map((row) => (
                 <tr key={row.Id}>
                   <td>{row.LanguageName}</td>
                   <td>{row.Code}</td>
@@ -218,6 +221,15 @@ export default function Levels() {
               )}
             </tbody>
           </table>
+          <PaginationBar
+            page={paging.page}
+            totalPages={paging.totalPages}
+            total={paging.total}
+            pageSize={paging.pageSize}
+            from={paging.from}
+            to={paging.to}
+            onChange={paging.setPage}
+          />
         </div>
       )}
     </div>

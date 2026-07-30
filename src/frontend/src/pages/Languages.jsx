@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import Loading from '../components/Loading'
+import PaginationBar from '../components/PaginationBar'
+import { useClientPagination } from '../hooks/useClientPagination'
 
 export default function Languages() {
   const empty = { name: '' }
@@ -12,6 +14,7 @@ export default function Languages() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const paging = useClientPagination(rows)
 
   async function load(q = search) {
     setLoading(true)
@@ -127,7 +130,7 @@ export default function Languages() {
         <Loading />
       ) : (
         <div className="panel table-responsive">
-          <table className="table mb-0 align-middle">
+          <table className="table table-zebra mb-0 align-middle">
             <thead>
               <tr>
                 <th>کد</th>
@@ -136,7 +139,7 @@ export default function Languages() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {paging.slice.map((row) => (
                 <tr key={row.Id}>
                   <td>{row.Id}</td>
                   <td>{row.Name}</td>
@@ -159,6 +162,15 @@ export default function Languages() {
               )}
             </tbody>
           </table>
+          <PaginationBar
+            page={paging.page}
+            totalPages={paging.totalPages}
+            total={paging.total}
+            pageSize={paging.pageSize}
+            from={paging.from}
+            to={paging.to}
+            onChange={paging.setPage}
+          />
         </div>
       )}
     </div>

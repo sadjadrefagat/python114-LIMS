@@ -3,6 +3,9 @@ import { api } from '../api/client'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
 import JalaliDatePicker, { todayJalaliString } from '../components/JalaliDatePicker'
+import PaginationBar from '../components/PaginationBar'
+import { useClientPagination } from '../hooks/useClientPagination'
+import { isValidMobile, MOBILE_ERROR, MOBILE_HINT, normalizeMobileInput } from '../utils/mobile'
 
 const emptyForm = {
   first_name: '',
@@ -28,6 +31,7 @@ export default function Students() {
   const [editId, setEditId] = useState(null)
   const today = useMemo(() => todayJalaliString(), [])
   const [form, setForm] = useState(emptyForm)
+  const paging = useClientPagination(rows)
 
   useEffect(() => {
     api.get('/languages').then((d) => setLanguages(d.languages || [])).catch(() => {})
@@ -83,6 +87,13 @@ export default function Students() {
     setBusy(true)
     setError('')
     setMessage('')
+
+    if (!isValidMobile(form.mobile)) {
+      setError(MOBILE_ERROR)
+      setBusy(false)
+      return
+    }
+
     try {
       if (editId) {
         await api.put(`/students/${editId}`, {
@@ -191,7 +202,18 @@ export default function Students() {
             </div>
             <div className="col-md-4">
               <label className="form-label">موبایل</label>
-              <input className="form-control" value={form.mobile} onChange={(e) => setForm((p) => ({ ...p, mobile: e.target.value }))} required />
+              <input
+                className="form-control"
+                value={form.mobile}
+                onChange={(e) => setForm((p) => ({ ...p, mobile: normalizeMobileInput(e.target.value) }))}
+                placeholder="09123456789"
+                inputMode="numeric"
+                maxLength={11}
+                pattern="09[0-9]{9}"
+                title={MOBILE_HINT}
+                required
+              />
+              <div className="form-text">{MOBILE_HINT}</div>
             </div>
             <div className="col-md-4">
               <label className="form-label">تاریخ تولد شمسی</label>
@@ -234,7 +256,7 @@ export default function Students() {
         <Loading />
       ) : (
         <div className="panel table-responsive">
-          <table className="table table-hover mb-0 align-middle">
+          <table className="table table-hover table-zebra mb-0 align-middle">
             <thead>
               <tr>
                 <th>نام</th>
@@ -246,7 +268,7 @@ export default function Students() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {paging.slice.map((row) => (
                 <tr key={row.Id}>
                   <td>
                     {row.FirstName} {row.LastName}
@@ -268,6 +290,15 @@ export default function Students() {
             </tbody>
           </table>
           {!rows.length && <div className="empty-state">موردی یافت نشد.</div>}
+          <PaginationBar
+            page={paging.page}
+            totalPages={paging.totalPages}
+            total={paging.total}
+            pageSize={paging.pageSize}
+            from={paging.from}
+            to={paging.to}
+            onChange={paging.setPage}
+          />
         </div>
       )}
     </div>

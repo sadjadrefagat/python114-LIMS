@@ -42,6 +42,21 @@ def validate_national_code(value: str) -> str:
     return code
 
 
+_MOBILE_RE = re.compile(r"^09\d{9}$")
+
+
+def validate_mobile(value: str) -> str:
+    """موبایل ایران: دقیقاً ۱۱ رقم، فقط عدد، شروع با ۰۹"""
+    text = normalize_digits(value)
+    if not text.isdigit():
+        raise ValueError("موبایل باید فقط عدد باشد")
+    if len(text) != 11:
+        raise ValueError("موبایل باید ۱۱ رقم باشد")
+    if not _MOBILE_RE.fullmatch(text):
+        raise ValueError("موبایل باید با ۰۹ شروع شود")
+    return text
+
+
 def validate_jalali_date(value: str, *, field_name: str = "تاریخ") -> str:
     text = normalize_digits(value)
     if not _JALALI_DATE_RE.fullmatch(text):
@@ -223,7 +238,7 @@ class RegisterRequest(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=50)
     last_name: str = Field(..., min_length=1, max_length=50)
     father_name: str = Field(..., min_length=1, max_length=50)
-    mobile: str = Field(..., min_length=8, max_length=20)
+    mobile: str = Field(..., min_length=1, max_length=20)
     national_code: str = Field(..., min_length=10, max_length=10)
     gender: Literal[1, 2] = 1
     birth_date: str
@@ -237,6 +252,11 @@ class RegisterRequest(BaseModel):
             return None
         v = v.strip()
         return v or None
+
+    @field_validator("mobile", mode="before")
+    @classmethod
+    def mobile_check(cls, v: Any) -> str:
+        return validate_mobile("" if v is None else str(v))
 
     @field_validator("national_code")
     @classmethod
@@ -385,6 +405,9 @@ class ClassCreate(BaseModel):
     def end_after_start(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValueError("تاریخ پایان کلاس نباید قبل از تاریخ شروع باشد")
+        today = _today_jalali_str()
+        if self.start_date and self.start_date < today:
+            raise ValueError("ثبت کلاس با تاریخ گذشته مجاز نیست")
         return self
 
 
@@ -510,7 +533,7 @@ class StudentCreate(BaseModel):
     national_code: str = Field(..., min_length=10, max_length=10)
     gender: Literal[1, 2]
     birth_date: str
-    mobile: str = Field(..., min_length=8, max_length=20)
+    mobile: str = Field(..., min_length=1, max_length=20)
     email: Optional[str] = None
     target_language_ref: Optional[int] = None
     current_level_ref: Optional[int] = None
@@ -521,6 +544,11 @@ class StudentCreate(BaseModel):
     @classmethod
     def national_code_check(cls, v: str) -> str:
         return validate_national_code(v)
+
+    @field_validator("mobile", mode="before")
+    @classmethod
+    def mobile_check(cls, v: Any) -> str:
+        return validate_mobile("" if v is None else str(v))
 
     @field_validator("birth_date")
     @classmethod
@@ -535,7 +563,7 @@ class StudentUpdate(BaseModel):
     national_code: Optional[str] = Field(None, min_length=10, max_length=10)
     gender: Optional[Literal[1, 2]] = None
     birth_date: Optional[str] = None
-    mobile: Optional[str] = Field(None, min_length=8, max_length=20)
+    mobile: Optional[str] = Field(None, min_length=1, max_length=20)
     email: Optional[str] = None
     target_language_ref: Optional[int] = None
     current_level_ref: Optional[int] = None
@@ -548,6 +576,13 @@ class StudentUpdate(BaseModel):
         if v is None or v == "":
             return None
         return validate_national_code(v)
+
+    @field_validator("mobile", mode="before")
+    @classmethod
+    def mobile_check(cls, v: Any) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        return validate_mobile(str(v))
 
     @field_validator("birth_date")
     @classmethod
@@ -564,7 +599,7 @@ class TeacherCreate(BaseModel):
     national_code: str = Field(..., min_length=10, max_length=10)
     gender: Literal[1, 2]
     birth_date: Optional[str] = None
-    mobile: str = Field(..., min_length=8, max_length=20)
+    mobile: str = Field(..., min_length=1, max_length=20)
     email: Optional[str] = None
     specialty: str = Field(..., min_length=1, max_length=200)
     bio: Optional[str] = None
@@ -573,6 +608,11 @@ class TeacherCreate(BaseModel):
     @classmethod
     def national_code_check(cls, v: str) -> str:
         return validate_national_code(v)
+
+    @field_validator("mobile", mode="before")
+    @classmethod
+    def mobile_check(cls, v: Any) -> str:
+        return validate_mobile("" if v is None else str(v))
 
     @field_validator("birth_date")
     @classmethod
@@ -589,7 +629,7 @@ class TeacherUpdate(BaseModel):
     national_code: Optional[str] = Field(None, min_length=10, max_length=10)
     gender: Optional[Literal[1, 2]] = None
     birth_date: Optional[str] = None
-    mobile: Optional[str] = Field(None, min_length=8, max_length=20)
+    mobile: Optional[str] = Field(None, min_length=1, max_length=20)
     email: Optional[str] = None
     specialty: Optional[str] = Field(None, min_length=1, max_length=200)
     bio: Optional[str] = None
@@ -600,6 +640,13 @@ class TeacherUpdate(BaseModel):
         if v is None or v == "":
             return None
         return validate_national_code(v)
+
+    @field_validator("mobile", mode="before")
+    @classmethod
+    def mobile_check(cls, v: Any) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        return validate_mobile(str(v))
 
     @field_validator("birth_date")
     @classmethod
@@ -631,6 +678,34 @@ class EnrollmentCreate(BaseModel):
     @classmethod
     def date_check(cls, v: str) -> str:
         return validate_jalali_date(v, field_name="تاریخ ثبت‌نام")
+
+
+class EnrollmentBulkCreate(BaseModel):
+    """ثبت‌نام چند زبان‌آموز با مقادیر مشترک — بدون تغییر ساختار جدول"""
+    student_refs: list[int] = Field(..., min_length=1)
+    class_ref: int
+    course_ref: Optional[int] = None
+    date: str
+    status: EnrollmentStatus = "pending_payment"
+    financial_status: FinancialStatus = "debtor"
+
+    @field_validator("date")
+    @classmethod
+    def date_check(cls, v: str) -> str:
+        return validate_jalali_date(v, field_name="تاریخ ثبت‌نام")
+
+    @field_validator("student_refs")
+    @classmethod
+    def unique_students(cls, v: list[int]) -> list[int]:
+        seen: set[int] = set()
+        out: list[int] = []
+        for sid in v:
+            if sid not in seen:
+                seen.add(sid)
+                out.append(sid)
+        if not out:
+            raise ValueError("حداقل یک زبان‌آموز انتخاب کنید")
+        return out
 
 
 class EnrollmentUpdate(BaseModel):

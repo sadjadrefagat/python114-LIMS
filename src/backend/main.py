@@ -35,7 +35,7 @@ from auth import (
     verify_password,
 )
 from config import settings
-from database import execute, execute_returning_id, fetch_all, fetch_one, health_check
+from database import db_cursor, execute, execute_returning_id, fetch_all, fetch_one, health_check
 from models import (
     AttendanceBulkCreate,
     AttendanceCreate,
@@ -46,6 +46,7 @@ from models import (
     ClassUpdate,
     CourseCreate,
     CourseUpdate,
+    EnrollmentBulkCreate,
     EnrollmentCreate,
     EnrollmentUpdate,
     LanguageCreate,
@@ -1137,7 +1138,7 @@ async def create_class(body: ClassCreate, user: dict = StaffDep):
         raise _bad_request("مدرس معتبر/فعال نیست (BR-004 / BR-008)")
     _validate_class_location(body.session_type_ref, body.location_address, body.meeting_link)
 
-    start_date = _normalize_jalali_date(body.start_date)
+    start_date = _reject_past_jalali_date(body.start_date, entity="کلاس")
     end_date = _normalize_jalali_date(body.end_date)
     if end_date < start_date:
         raise _bad_request("تاریخ پایان کلاس نباید قبل از تاریخ شروع باشد")
@@ -1190,6 +1191,10 @@ async def update_class(class_id: int, body: ClassUpdate, user: dict = StaffDep):
     data = body.model_dump(exclude_unset=True)
     if "start_date" in data and data["start_date"]:
         data["start_date"] = _normalize_jalali_date(data["start_date"])
+        old_raw = current.get("StartDate")
+        old_start = _normalize_jalali_date(str(old_raw)) if old_raw else None
+        if data["start_date"] != old_start:
+            _reject_past_jalali_date(data["start_date"], entity="کلاس")
     if "end_date" in data and data["end_date"]:
         data["end_date"] = _normalize_jalali_date(data["end_date"])
 
@@ -1591,6 +1596,91 @@ async def create_enrollment(body: EnrollmentCreate, user: dict = AuthDep):
     return {"message": "Enrollment created", "id": new_id}
 
 
+@app.post("/enrollments/bulk", status_code=201)
+async def create_enrollments_bulk(body: EnrollmentBulkCreate, user: dict = AuthDep):
+    """ثبت هم‌زمان چند زبان‌آموز در یک کلاس با فیلدهای مشترک"""
+    student_refs = body.student_refs
+    class_row = fetch_one(
+        "SELECT Id, CourseRef, Capacity, Status FROM Class WHERE Id = ?",
+        (body.class_ref,),
+    )
+    if not class_row:
+        raise _bad_request("کلاس معتبر نیست")
+    if class_row["Status"] == "full":
+        raise _bad_request("ظرفیت کلاس تکمیل است؛ فقط از مسیر Waitlist مجاز است (BR-025)")
+    if class_row["Status"] in ("cancelled", "finished"):
+        raise _bad_request("ثبت‌نام در این وضعیت کلاس مجاز نیست")
+
+    course_ref = body.course_ref or class_row["CourseRef"]
+    capacity = int(class_row["Capacity"])
+
+    placeholders = ",".join("?" for _ in student_refs)
+    active_students = fetch_all(
+        f"SELECT Id FROM Student WHERE IsActive = 1 AND Id IN ({placeholders})",
+        tuple(student_refs),
+    )
+    active_ids = {int(r["Id"]) for r in active_students}
+    missing = [sid for sid in student_refs if sid not in active_ids]
+    if missing:
+        raise _bad_request(f"زبان‌آموز نامعتبر: {', '.join(map(str, missing))}")
+
+    enrolled = fetch_one(
+        """SELECT COUNT(*) AS Cnt FROM Registration
+           WHERE ClassRef = ? AND Status IN ('active', 'pending_payment', 'pending_approval')""",
+        (body.class_ref,),
+    )
+    count = int(enrolled["Cnt"]) if enrolled else 0
+    if count + len(student_refs) > capacity:
+        raise _bad_request(
+            f"ظرفیت کلاس کافی نیست (باقیمانده: {max(capacity - count, 0)}، درخواست: {len(student_refs)})"
+        )
+
+    duplicates = fetch_all(
+        f"""SELECT Studentref AS StudentRef FROM Registration
+            WHERE ClassRef = ? AND Studentref IN ({placeholders})
+              AND Status NOT IN ('withdrawn', 'transferred')""",
+        (body.class_ref, *student_refs),
+    )
+    if duplicates:
+        dup_ids = ", ".join(str(r["StudentRef"]) for r in duplicates)
+        raise _bad_request(f"این زبان‌آموزان قبلاً در این کلاس ثبت‌نام شده‌اند: {dup_ids}")
+
+    new_ids: list[int] = []
+    with db_cursor() as cursor:
+        for sid in student_refs:
+            cursor.execute(
+                """INSERT INTO Registration
+                    ([Studentref], [CourseRef], [ClassRef], [Date], [Status], [FinancialStatus])
+                   VALUES (?, ?, ?, ?, ?, ?);
+                   SELECT CAST(SCOPE_IDENTITY() AS INT) AS NewId""",
+                (
+                    sid,
+                    course_ref,
+                    body.class_ref,
+                    body.date,
+                    body.status,
+                    body.financial_status,
+                ),
+            )
+            while cursor.description is None:
+                if not cursor.nextset():
+                    break
+            row = cursor.fetchone()
+            if row and row[0] is not None:
+                new_ids.append(int(row[0]))
+            while cursor.nextset():
+                pass
+
+        if count + len(student_refs) >= capacity:
+            cursor.execute("UPDATE Class SET Status = N'full' WHERE Id = ?", (body.class_ref,))
+
+    return {
+        "message": f"{len(new_ids)} ثبت‌نام ایجاد شد",
+        "ids": new_ids,
+        "count": len(new_ids),
+    }
+
+
 @app.put("/enrollments/{enrollment_id}")
 async def update_enrollment(enrollment_id: int, body: EnrollmentUpdate, user: dict = StaffDep):
     current = fetch_one("SELECT * FROM Registration WHERE Id = ?", (enrollment_id,))
@@ -1782,17 +1872,84 @@ async def create_score(body: ScoreCreate, user: dict = TeacherStaffDep):
 
 @app.get("/reports/summary")
 async def report_summary(user: dict = FinanceDep):
+    """خلاصه عملیاتی + دادهٔ نمودار برای داشبورد"""
+    students = fetch_one("SELECT COUNT(*) AS Cnt FROM Student WHERE IsActive = 1")["Cnt"]
+    teachers = fetch_one("SELECT COUNT(*) AS Cnt FROM Teacher WHERE IsActive = 1")["Cnt"]
+    courses = fetch_one("SELECT COUNT(*) AS Cnt FROM Course WHERE IsActive = 1")["Cnt"]
+    classes_open = fetch_one(
+        "SELECT COUNT(*) AS Cnt FROM Class WHERE Status IN ('open', 'in_progress')"
+    )["Cnt"]
+    classes_total = fetch_one("SELECT COUNT(*) AS Cnt FROM Class")["Cnt"]
+    enrollments_active = fetch_one(
+        "SELECT COUNT(*) AS Cnt FROM Registration WHERE Status = N'active'"
+    )["Cnt"]
+    enrollments_total = fetch_one("SELECT COUNT(*) AS Cnt FROM Registration")["Cnt"]
+    payments_paid_total = fetch_one(
+        "SELECT ISNULL(SUM(Amount), 0) AS Total FROM Payment WHERE Status = N'paid'"
+    )["Total"]
+    sessions_scheduled = fetch_one(
+        "SELECT COUNT(*) AS Cnt FROM [Session] WHERE Status = N'scheduled'"
+    )["Cnt"]
+    languages = fetch_one("SELECT COUNT(*) AS Cnt FROM Language")["Cnt"]
+
+    enrollments_by_status = fetch_all(
+        """
+        SELECT Status AS label, COUNT(*) AS value
+        FROM Registration
+        GROUP BY Status
+        ORDER BY COUNT(*) DESC
+        """
+    )
+    classes_by_status = fetch_all(
+        """
+        SELECT Status AS label, COUNT(*) AS value
+        FROM Class
+        GROUP BY Status
+        ORDER BY COUNT(*) DESC
+        """
+    )
+    courses_by_language = fetch_all(
+        """
+        SELECT TOP 6 L.Name AS label, COUNT(*) AS value
+        FROM Course C
+        JOIN Language L ON C.LanguageRef = L.Id
+        WHERE C.IsActive = 1
+        GROUP BY L.Name
+        ORDER BY COUNT(*) DESC
+        """
+    )
+    capacity = fetch_one(
+        """
+        SELECT
+            (SELECT ISNULL(SUM(Capacity), 0) FROM Class
+             WHERE Status IN (N'open', N'in_progress', N'full')) AS CapacityTotal,
+            (SELECT COUNT(*) FROM Registration R
+             INNER JOIN Class Cl ON R.ClassRef = Cl.Id
+             WHERE Cl.Status IN (N'open', N'in_progress', N'full')
+               AND R.Status IN (N'active', N'pending_payment', N'pending_approval')) AS Enrolled
+        """
+    )
+
     return {
-        "students": fetch_one("SELECT COUNT(*) AS Cnt FROM Student WHERE IsActive = 1")["Cnt"],
-        "teachers": fetch_one("SELECT COUNT(*) AS Cnt FROM Teacher WHERE IsActive = 1")["Cnt"],
-        "courses": fetch_one("SELECT COUNT(*) AS Cnt FROM Course WHERE IsActive = 1")["Cnt"],
-        "classes_open": fetch_one(
-            "SELECT COUNT(*) AS Cnt FROM Class WHERE Status IN ('open', 'in_progress')"
-        )["Cnt"],
-        "enrollments_active": fetch_one(
-            "SELECT COUNT(*) AS Cnt FROM Registration WHERE Status = N'active'"
-        )["Cnt"],
-        "payments_paid_total": fetch_one(
-            "SELECT ISNULL(SUM(Amount), 0) AS Total FROM Payment WHERE Status = N'paid'"
-        )["Total"],
+        "students": int(students or 0),
+        "teachers": int(teachers or 0),
+        "courses": int(courses or 0),
+        "languages": int(languages or 0),
+        "classes_open": int(classes_open or 0),
+        "classes_total": int(classes_total or 0),
+        "enrollments_active": int(enrollments_active or 0),
+        "enrollments_total": int(enrollments_total or 0),
+        "sessions_scheduled": int(sessions_scheduled or 0),
+        "payments_paid_total": int(payments_paid_total or 0),
+        "capacity_total": int((capacity or {}).get("CapacityTotal") or 0),
+        "capacity_used": int((capacity or {}).get("Enrolled") or 0),
+        "enrollments_by_status": [
+            {"label": r["label"], "value": int(r["value"])} for r in enrollments_by_status
+        ],
+        "classes_by_status": [
+            {"label": r["label"], "value": int(r["value"])} for r in classes_by_status
+        ],
+        "courses_by_language": [
+            {"label": r["label"], "value": int(r["value"])} for r in courses_by_language
+        ],
     }

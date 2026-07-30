@@ -5,6 +5,8 @@ import { useAuth } from '../context/AuthContext'
 import { todayJalaliString } from '../components/JalaliDatePicker'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
+import PaginationBar from '../components/PaginationBar'
+import { useClientPagination } from '../hooks/useClientPagination'
 
 const statusLabel = {
   draft: 'پیش‌نویس',
@@ -28,6 +30,7 @@ export default function CourseDetail() {
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const paging = useClientPagination(classes)
 
   useEffect(() => {
     setLoading(true)
@@ -245,7 +248,7 @@ export default function CourseDetail() {
 
         {classes.length > 0 && (
           <div className="table-responsive mt-4">
-            <table className="table align-middle mb-0">
+            <table className="table table-zebra align-middle mb-0">
               <thead>
                 <tr>
                   <th>کد کلاس</th>
@@ -257,7 +260,7 @@ export default function CourseDetail() {
                 </tr>
               </thead>
               <tbody>
-                {classes.map((c) => (
+                {paging.slice.map((c) => (
                   <tr key={c.Id}>
                     <td>{c.Id}</td>
                     <td>{c.TeacherName}</td>
@@ -271,6 +274,15 @@ export default function CourseDetail() {
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              page={paging.page}
+              totalPages={paging.totalPages}
+              total={paging.total}
+              pageSize={paging.pageSize}
+              from={paging.from}
+              to={paging.to}
+              onChange={paging.setPage}
+            />
           </div>
         )}
       </div>

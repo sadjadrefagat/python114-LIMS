@@ -3,6 +3,8 @@ import { api } from '../api/client'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
 import JalaliDatePicker from '../components/JalaliDatePicker'
+import PaginationBar from '../components/PaginationBar'
+import { useClientPagination } from '../hooks/useClientPagination'
 
 const statusMap = {
   pending_payment: 'در انتظار پرداخت',
@@ -21,6 +23,7 @@ const financeMap = {
 }
 
 const emptyForm = {
+  student_refs: [],
   student_ref: '',
   class_ref: '',
   date: '',
@@ -41,6 +44,7 @@ export default function Enrollments() {
   const [showCreate, setShowCreate] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(emptyForm)
+  const paging = useClientPagination(rows)
 
   async function load(q = search) {
     setLoading(true)
@@ -77,6 +81,7 @@ export default function Enrollments() {
   function startEdit(row) {
     setEditId(row.Id)
     setForm({
+      student_refs: [],
       student_ref: String(row.StudentRef || ''),
       class_ref: row.ClassRef ? String(row.ClassRef) : '',
       date: row.Date || '',
@@ -102,6 +107,12 @@ export default function Enrollments() {
       return
     }
 
+    if (!editId && !form.student_refs.length) {
+      setError('حداقل یک زبان‌آموز انتخاب کنید')
+      setBusy(false)
+      return
+    }
+
     try {
       if (editId) {
         await api.put(`/enrollments/${editId}`, {
@@ -111,14 +122,16 @@ export default function Enrollments() {
         })
         setMessage('ثبت‌نام ویرایش شد')
       } else {
-        await api.post('/enrollments', {
-          student_ref: Number(form.student_ref),
+        const payload = {
+          student_refs: form.student_refs.map(Number),
           class_ref: Number(form.class_ref),
           date: form.date,
           status: form.status,
           financial_status: form.financial_status,
-        })
-        setMessage('ثبت‌نام انجام شد')
+        }
+        const res = await api.post('/enrollments/bulk', payload)
+        const n = res.count ?? res.ids?.length ?? form.student_refs.length
+        setMessage(n > 1 ? `${n} ثبت‌نام انجام شد` : 'ثبت‌نام انجام شد')
       }
       resetForm()
       await load(search)
@@ -142,6 +155,11 @@ export default function Enrollments() {
       setError(err.message)
     }
   }
+
+  const studentOptions = students.map((s) => ({
+    value: String(s.Id),
+    label: `${s.FirstName} ${s.LastName}`,
+  }))
 
   return (
     <div className="container py-4">
@@ -181,17 +199,27 @@ export default function Enrollments() {
           </div>
           <form className="row g-2" onSubmit={handleSubmit}>
             <div className="col-md-4">
-              <label className="form-label">زبان‌آموز</label>
-              <VazirSelect
-                required
-                disabled={Boolean(editId)}
-                value={form.student_ref}
-                onChange={(v) => setForm((p) => ({ ...p, student_ref: v }))}
-                options={students.map((s) => ({
-                  value: String(s.Id),
-                  label: `${s.FirstName} ${s.LastName}`,
-                }))}
-              />
+              <label className="form-label">
+                زبان‌آموز{!editId ? ' (چندتایی)' : ''}
+              </label>
+              {editId ? (
+                <VazirSelect
+                  required
+                  disabled
+                  value={form.student_ref}
+                  onChange={(v) => setForm((p) => ({ ...p, student_ref: v }))}
+                  options={studentOptions}
+                />
+              ) : (
+                <VazirSelect
+                  required
+                  multiple
+                  placeholder="انتخاب یک یا چند زبان‌آموز"
+                  value={form.student_refs}
+                  onChange={(v) => setForm((p) => ({ ...p, student_refs: v }))}
+                  options={studentOptions}
+                />
+              )}
             </div>
             <div className="col-md-4">
               <label className="form-label">کلاس</label>
@@ -244,10 +272,21 @@ export default function Enrollments() {
             )}
             <div className="col-md-4 d-grid align-items-end">
               <button className="btn btn-brand rounded-pill" disabled={busy}>
-                {busy ? '...' : editId ? 'ذخیره' : 'ثبت'}
+                {busy
+                  ? '...'
+                  : editId
+                    ? 'ذخیره'
+                    : form.student_refs.length > 1
+                      ? `ثبت ${form.student_refs.length} نفر`
+                      : 'ثبت'}
               </button>
             </div>
           </form>
+          {!editId && form.student_refs.length > 1 && (
+            <p className="small text-muted mb-0 mt-2">
+              کلاس، تاریخ، وضعیت و وضعیت مالی برای همهٔ {form.student_refs.length} زبان‌آموز اعمال می‌شود.
+            </p>
+          )}
         </div>
       )}
 
@@ -257,7 +296,7 @@ export default function Enrollments() {
         <Loading />
       ) : (
         <div className="panel table-responsive">
-          <table className="table table-hover mb-0 align-middle">
+          <table className="table table-hover table-zebra mb-0 align-middle">
             <thead>
               <tr>
                 <th>کد</th>
@@ -271,7 +310,7 @@ export default function Enrollments() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {paging.slice.map((row) => (
                 <tr key={row.Id}>
                   <td>{row.Id}</td>
                   <td>{row.StudentName}</td>
@@ -299,6 +338,15 @@ export default function Enrollments() {
             </tbody>
           </table>
           {!rows.length && <div className="empty-state">ثبت‌نامی یافت نشد.</div>}
+          <PaginationBar
+            page={paging.page}
+            totalPages={paging.totalPages}
+            total={paging.total}
+            pageSize={paging.pageSize}
+            from={paging.from}
+            to={paging.to}
+            onChange={paging.setPage}
+          />
         </div>
       )}
     </div>

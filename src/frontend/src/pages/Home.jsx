@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { api, formatMoney } from '../api/client'
+import { api } from '../api/client'
 import Loading from '../components/Loading'
+import CourseCard from '../components/CourseCard'
 
 export default function Home() {
   const [courses, setCourses] = useState([])
@@ -73,28 +74,10 @@ export default function Home() {
         {loading ? (
           <Loading />
         ) : (
-          <div className="row g-3">
+          <div className="row g-4">
             {courses.map((course) => (
               <div className="col-md-4" key={course.Id}>
-                <div className="course-tile">
-                  <div className="d-flex justify-content-between mb-2">
-                    <span className="chip chip-teal">{course.LanguageName}</span>
-                    {course.IsHighlighted ? <span className="chip chip-coral">پیشنهادی</span> : null}
-                  </div>
-                  <h3 className="h5 fw-bold">{course.Name}</h3>
-                  <p className="muted small mb-3">
-                    {course.LevelName || 'سطح آزاد'} · {course.SessionsCount} جلسه
-                  </p>
-                  <div className="fw-bold text-success mb-3">{formatMoney(course.Cost)}</div>
-                  <div className="d-flex gap-2">
-                    <Link to={`/courses/${course.Id}`} className="btn btn-sm btn-outline-success rounded-pill">
-                      جزئیات
-                    </Link>
-                    <Link to={`/courses/${course.Id}#enroll`} className="btn btn-sm btn-brand rounded-pill">
-                      ثبت‌نام
-                    </Link>
-                  </div>
-                </div>
+                <CourseCard course={course} />
               </div>
             ))}
             {!courses.length && <div className="empty-state">هنوز دوره‌ای ثبت نشده است.</div>}

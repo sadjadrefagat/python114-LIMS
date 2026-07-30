@@ -6,6 +6,8 @@ import JalaliDatePicker, {
   compareJalali,
   todayJalaliString,
 } from '../components/JalaliDatePicker'
+import PaginationBar from '../components/PaginationBar'
+import { useClientPagination } from '../hooks/useClientPagination'
 
 const emptyForm = {
   class_ref: '',
@@ -53,6 +55,7 @@ export default function Sessions() {
   const [message, setMessage] = useState('')
   const today = useMemo(() => todayJalaliString(), [])
   const dateIsPastLocked = Boolean(editId && editOriginalDate && compareJalali(editOriginalDate, today) < 0)
+  const paging = useClientPagination(rows)
 
   async function load(q = search) {
     setLoading(true)
@@ -357,7 +360,7 @@ export default function Sessions() {
         <Loading />
       ) : (
         <div className="panel table-responsive">
-          <table className="table mb-0 align-middle">
+          <table className="table table-zebra mb-0 align-middle">
             <thead>
               <tr>
                 <th>کد</th>
@@ -370,7 +373,7 @@ export default function Sessions() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {paging.slice.map((row) => (
                   <tr key={row.Id}>
                     <td>{row.Id}</td>
                     <td>{row.CourseName}</td>
@@ -407,6 +410,15 @@ export default function Sessions() {
               )}
             </tbody>
           </table>
+          <PaginationBar
+            page={paging.page}
+            totalPages={paging.totalPages}
+            total={paging.total}
+            pageSize={paging.pageSize}
+            from={paging.from}
+            to={paging.to}
+            onChange={paging.setPage}
+          />
         </div>
       )}
     </div>

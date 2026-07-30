@@ -55,6 +55,14 @@ async function request(path, options = {}) {
   }
 
   if (!response.ok) {
+    if (response.status === 405) {
+      const error = new Error(
+        'متد مجاز نیست — احتمالاً سرور بک‌اند قدیمی است. بک‌اند را ری‌استارت کنید (uvicorn).',
+      )
+      error.status = 405
+      error.data = data
+      throw error
+    }
     const detail = data?.detail
     let message
     if (Array.isArray(detail)) {
@@ -105,7 +113,7 @@ export const authStorage = {
 
 export function formatMoney(value) {
   if (value == null) return '—'
-  return Number(value).toLocaleString('fa-IR') + ' ریال'
+  return Number(value).toLocaleString('en-US') + ' ریال'
 }
 
 export function roleLabel(role) {

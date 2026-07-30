@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { api, formatMoney } from '../api/client'
+import { api } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
-
+import PaginationBar from '../components/PaginationBar'
+import { useClientPagination } from '../hooks/useClientPagination'
+import CourseCard from '../components/CourseCard'
 const TEACHING_METHODS = [
   { value: 'حضوری', label: 'حضوری' },
   { value: 'آنلاین', label: 'آنلاین' },
@@ -51,6 +52,7 @@ export default function Courses() {
   const [showCreate, setShowCreate] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(emptyForm)
+  const paging = useClientPagination(courses)
 
   useEffect(() => {
     api.get('/languages').then((d) => setLanguages(d.languages || [])).catch(() => {})
@@ -329,52 +331,29 @@ export default function Courses() {
       {loading ? (
         <Loading />
       ) : (
-        <div className="row g-3">
-          {courses.map((course) => (
-            <div className="col-md-6 col-lg-4" key={course.Id}>
-              <div className="course-tile">
-                <div className="d-flex justify-content-between mb-2">
-                  <span className="chip chip-teal">{course.LanguageName}</span>
-                  {course.LevelName && <span className="chip chip-sky">{course.LevelName}</span>}
-                </div>
-                <h2 className="h5 fw-bold">{course.Name}</h2>
-                <p className="muted small">
-                  {course.SessionsCount} جلسه
-                  {course.AgeGroup ? ` · ${course.AgeGroup}` : ''}
-                </p>
-                <div className="d-flex justify-content-between align-items-center mt-3 gap-2">
-                  <strong className="text-success">{formatMoney(course.Cost)}</strong>
-                  <div className="d-flex flex-wrap gap-1">
-                    <Link to={`/courses/${course.Id}`} className="btn btn-sm btn-outline-success rounded-pill">
-                      جزئیات
-                    </Link>
-                    <Link to={`/courses/${course.Id}#enroll`} className="btn btn-sm btn-brand rounded-pill">
-                      ثبت‌نام
-                    </Link>
-                    {canCreate && (
-                      <>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-outline-secondary rounded-pill"
-                          onClick={() => startEdit(course)}
-                        >
-                          ویرایش
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-outline-danger rounded-pill"
-                          onClick={() => handleDelete(course)}
-                        >
-                          حذف
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
+        <div className="row g-4">
+          {paging.slice.map((course) => (
+            <div className="col-md-6 col-xl-4" key={course.Id}>
+              <CourseCard
+                course={course}
+                canManage={canCreate}
+                onEdit={startEdit}
+                onDelete={handleDelete}
+              />
             </div>
           ))}
           {!courses.length && <div className="empty-state col-12">دوره‌ای یافت نشد.</div>}
+          <div className="col-12">
+            <PaginationBar
+              page={paging.page}
+              totalPages={paging.totalPages}
+              total={paging.total}
+              pageSize={paging.pageSize}
+              from={paging.from}
+              to={paging.to}
+              onChange={paging.setPage}
+            />
+          </div>
         </div>
       )}
     </div>

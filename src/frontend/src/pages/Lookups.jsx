@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import Loading from '../components/Loading'
+import PaginationBar from '../components/PaginationBar'
+import { useClientPagination } from '../hooks/useClientPagination'
 
 const emptyBranch = { name: '', address: '', phone: '' }
 
@@ -16,6 +18,8 @@ export default function Lookups() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const stPaging = useClientPagination(sessionTypes)
+  const brPaging = useClientPagination(branches)
 
   async function load(stQ = stSearch, brQ = brSearch) {
     setLoading(true)
@@ -192,24 +196,35 @@ export default function Lookups() {
             {loading ? (
               <Loading />
             ) : (
-              <ul className="mt-3 mb-0 list-unstyled">
-                {sessionTypes.map((s) => (
-                  <li key={s.Id} className="py-1 border-bottom d-flex justify-content-between align-items-center">
-                    <span>
-                      {s.Id}. {s.Name}
-                    </span>
-                    <span className="text-nowrap">
-                      <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEditSessionType(s)}>
-                        ویرایش
-                      </button>
-                      <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => deleteSessionType(s)}>
-                        حذف
-                      </button>
-                    </span>
-                  </li>
-                ))}
-                {!sessionTypes.length && <li className="py-2 muted">موردی یافت نشد</li>}
-              </ul>
+              <>
+                <ul className="mt-3 mb-0 list-unstyled list-zebra">
+                  {stPaging.slice.map((s) => (
+                    <li key={s.Id} className="py-1 border-bottom d-flex justify-content-between align-items-center">
+                      <span>
+                        {s.Id}. {s.Name}
+                      </span>
+                      <span className="text-nowrap">
+                        <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEditSessionType(s)}>
+                          ویرایش
+                        </button>
+                        <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => deleteSessionType(s)}>
+                          حذف
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                  {!sessionTypes.length && <li className="py-2 muted">موردی یافت نشد</li>}
+                </ul>
+                <PaginationBar
+                  page={stPaging.page}
+                  totalPages={stPaging.totalPages}
+                  total={stPaging.total}
+                  pageSize={stPaging.pageSize}
+                  from={stPaging.from}
+                  to={stPaging.to}
+                  onChange={stPaging.setPage}
+                />
+              </>
             )}
           </div>
         </div>
@@ -264,25 +279,36 @@ export default function Lookups() {
             {loading ? (
               <Loading />
             ) : (
-              <ul className="mt-3 mb-0 list-unstyled">
-                {branches.map((b) => (
-                  <li key={b.Id} className="py-1 border-bottom d-flex justify-content-between align-items-center">
-                    <span>
-                      <strong>{b.Name}</strong>
-                      {b.Address ? ` — ${b.Address}` : ''}
-                    </span>
-                    <span className="text-nowrap">
-                      <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEditBranch(b)}>
-                        ویرایش
-                      </button>
-                      <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => deleteBranch(b)}>
-                        حذف
-                      </button>
-                    </span>
-                  </li>
-                ))}
-                {!branches.length && <li className="py-2 muted">موردی یافت نشد</li>}
-              </ul>
+              <>
+                <ul className="mt-3 mb-0 list-unstyled list-zebra">
+                  {brPaging.slice.map((b) => (
+                    <li key={b.Id} className="py-1 border-bottom d-flex justify-content-between align-items-center">
+                      <span>
+                        <strong>{b.Name}</strong>
+                        {b.Address ? ` — ${b.Address}` : ''}
+                      </span>
+                      <span className="text-nowrap">
+                        <button type="button" className="btn btn-sm btn-outline-success rounded-pill me-1" onClick={() => startEditBranch(b)}>
+                          ویرایش
+                        </button>
+                        <button type="button" className="btn btn-sm btn-outline-danger rounded-pill" onClick={() => deleteBranch(b)}>
+                          حذف
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                  {!branches.length && <li className="py-2 muted">موردی یافت نشد</li>}
+                </ul>
+                <PaginationBar
+                  page={brPaging.page}
+                  totalPages={brPaging.totalPages}
+                  total={brPaging.total}
+                  pageSize={brPaging.pageSize}
+                  from={brPaging.from}
+                  to={brPaging.to}
+                  onChange={brPaging.setPage}
+                />
+              </>
             )}
           </div>
         </div>

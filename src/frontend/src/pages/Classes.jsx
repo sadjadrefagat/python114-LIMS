@@ -3,7 +3,9 @@ import { api } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
-import JalaliDatePicker, { compareJalali } from '../components/JalaliDatePicker'
+import JalaliDatePicker, { compareJalali, todayJalaliString } from '../components/JalaliDatePicker'
+import PaginationBar from '../components/PaginationBar'
+import { useClientPagination } from '../hooks/useClientPagination'
 
 const statusMap = {
   draft: 'پیش‌نویس',
@@ -45,6 +47,8 @@ export default function Classes() {
   const [showCreate, setShowCreate] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(emptyForm)
+  const today = todayJalaliString()
+  const paging = useClientPagination(rows)
 
   async function load(q = search) {
     setLoading(true)
@@ -127,6 +131,11 @@ export default function Classes() {
     }
     if (compareJalali(form.end_date, form.start_date) < 0) {
       setError('تاریخ پایان نباید قبل از تاریخ شروع باشد')
+      setBusy(false)
+      return
+    }
+    if (!editId && compareJalali(form.start_date, today) < 0) {
+      setError('ثبت کلاس با تاریخ گذشته مجاز نیست')
       setBusy(false)
       return
     }
@@ -267,6 +276,7 @@ export default function Classes() {
                 required
                 value={form.start_date}
                 onChange={changeStartDate}
+                minDate={editId ? '' : today}
                 maxDate={form.end_date || ''}
               />
             </div>
@@ -276,7 +286,7 @@ export default function Classes() {
                 required
                 value={form.end_date}
                 onChange={(v) => setForm((p) => ({ ...p, end_date: v }))}
-                minDate={form.start_date || ''}
+                minDate={form.start_date || (editId ? '' : today)}
               />
             </div>
             <div className="col-md-2">
@@ -364,7 +374,7 @@ export default function Classes() {
         <Loading />
       ) : (
         <div className="panel table-responsive">
-          <table className="table table-hover mb-0 align-middle">
+          <table className="table table-hover table-zebra mb-0 align-middle">
             <thead>
               <tr>
                 <th>کد</th>
@@ -378,7 +388,7 @@ export default function Classes() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {paging.slice.map((row) => (
                 <tr key={row.Id}>
                   <td>{row.Id}</td>
                   <td>{row.CourseName}</td>
@@ -414,6 +424,15 @@ export default function Classes() {
             </tbody>
           </table>
           {!rows.length && <div className="empty-state">کلاسی یافت نشد.</div>}
+          <PaginationBar
+            page={paging.page}
+            totalPages={paging.totalPages}
+            total={paging.total}
+            pageSize={paging.pageSize}
+            from={paging.from}
+            to={paging.to}
+            onChange={paging.setPage}
+          />
         </div>
       )}
     </div>
