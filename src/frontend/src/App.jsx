@@ -21,13 +21,19 @@ const Languages = lazy(() => import('./pages/Languages'))
 const Levels = lazy(() => import('./pages/Levels'))
 const Sessions = lazy(() => import('./pages/Sessions'))
 const Lookups = lazy(() => import('./pages/Lookups'))
+const Users = lazy(() => import('./pages/Users'))
 const About = lazy(() => import('./pages/About'))
 const NotFound = lazy(() => import('./pages/NotFound'))
+
+const STAFF_ROLES = ['admin', 'secretary', 'education']
+const SESSION_ROLES = ['admin', 'secretary', 'education', 'teacher']
 
 export default function App() {
   const { hasRole } = useAuth()
   const location = useLocation()
-  const isStaff = hasRole('admin', 'secretary')
+  const isStaff = hasRole(...STAFF_ROLES)
+  const isTeacher = hasRole('teacher')
+  const showAdminNav = isStaff || isTeacher
   const [adminNavOpen, setAdminNavOpen] = useState(false)
 
   useEffect(() => {
@@ -48,14 +54,14 @@ export default function App() {
   }, [adminNavOpen])
 
   return (
-    <div className={`app-shell ${isStaff ? 'has-admin-sidebar' : ''}`}>
+    <div className={`app-shell ${showAdminNav ? 'has-admin-sidebar' : ''}`}>
       <Navbar
-        showAdminToggle={isStaff}
+        showAdminToggle={showAdminNav}
         adminNavOpen={adminNavOpen}
         onToggleAdminNav={() => setAdminNavOpen((v) => !v)}
       />
       <div className="app-body">
-        {isStaff && (
+        {showAdminNav && (
           <AdminSidebar open={adminNavOpen} onClose={() => setAdminNavOpen(false)} />
         )}
         <div className="app-content">
@@ -79,7 +85,7 @@ export default function App() {
                 <Route
                   path="/languages"
                   element={
-                    <ProtectedRoute roles={['admin', 'secretary']}>
+                    <ProtectedRoute roles={STAFF_ROLES}>
                       <Languages />
                     </ProtectedRoute>
                   }
@@ -87,7 +93,7 @@ export default function App() {
                 <Route
                   path="/levels"
                   element={
-                    <ProtectedRoute roles={['admin', 'secretary']}>
+                    <ProtectedRoute roles={STAFF_ROLES}>
                       <Levels />
                     </ProtectedRoute>
                   }
@@ -95,7 +101,7 @@ export default function App() {
                 <Route
                   path="/classes"
                   element={
-                    <ProtectedRoute roles={['admin', 'secretary']}>
+                    <ProtectedRoute roles={STAFF_ROLES}>
                       <Classes />
                     </ProtectedRoute>
                   }
@@ -103,7 +109,7 @@ export default function App() {
                 <Route
                   path="/sessions"
                   element={
-                    <ProtectedRoute roles={['admin', 'secretary']}>
+                    <ProtectedRoute roles={SESSION_ROLES}>
                       <Sessions />
                     </ProtectedRoute>
                   }
@@ -111,7 +117,7 @@ export default function App() {
                 <Route
                   path="/students"
                   element={
-                    <ProtectedRoute roles={['admin', 'secretary']}>
+                    <ProtectedRoute roles={STAFF_ROLES}>
                       <Students />
                     </ProtectedRoute>
                   }
@@ -119,7 +125,7 @@ export default function App() {
                 <Route
                   path="/teachers"
                   element={
-                    <ProtectedRoute roles={['admin', 'secretary']}>
+                    <ProtectedRoute roles={STAFF_ROLES}>
                       <Teachers />
                     </ProtectedRoute>
                   }
@@ -127,7 +133,7 @@ export default function App() {
                 <Route
                   path="/enrollments"
                   element={
-                    <ProtectedRoute roles={['admin', 'secretary']}>
+                    <ProtectedRoute roles={STAFF_ROLES}>
                       <Enrollments />
                     </ProtectedRoute>
                   }
@@ -135,8 +141,16 @@ export default function App() {
                 <Route
                   path="/lookups"
                   element={
-                    <ProtectedRoute roles={['admin', 'secretary']}>
+                    <ProtectedRoute roles={STAFF_ROLES}>
                       <Lookups />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/users"
+                  element={
+                    <ProtectedRoute roles={['admin']}>
+                      <Users />
                     </ProtectedRoute>
                   }
                 />

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
+import { useAuth } from '../context/AuthContext'
 import Loading from '../components/Loading'
 import VazirSelect from '../components/VazirSelect'
 import JalaliDatePicker, {
@@ -8,6 +9,7 @@ import JalaliDatePicker, {
 } from '../components/JalaliDatePicker'
 import PaginationBar from '../components/PaginationBar'
 import RowActions from '../components/RowActions'
+import AttendanceModal from '../components/AttendanceModal'
 import { useClientPagination } from '../hooks/useClientPagination'
 import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 
@@ -44,6 +46,9 @@ function isValidTime(value) {
 }
 
 export default function Sessions() {
+  const { user, hasRole } = useAuth()
+  const canManage = hasRole('admin', 'secretary', 'education')
+  const canAttendance = hasRole('admin', 'secretary', 'education', 'teacher')
   const [askConfirm, confirmDialog] = useConfirmDialog()
   const [rows, setRows] = useState([])
   const [classes, setClasses] = useState([])
@@ -56,9 +61,18 @@ export default function Sessions() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [attendanceSessionId, setAttendanceSessionId] = useState(null)
   const today = useMemo(() => todayJalaliString(), [])
   const dateIsPastLocked = Boolean(editId && editOriginalDate && compareJalali(editOriginalDate, today) < 0)
-  const paging = useClientPagination(rows)
+
+  const visibleRows = useMemo(() => {
+    if (user?.role !== 'teacher') return rows
+    const teacherRef = user?.teacher_ref
+    if (!teacherRef) return rows
+    return rows.filter((r) => Number(r.TeacherRef) === Number(teacherRef))
+  }, [rows, user])
+
+  const paging = useClientPagination(visibleRows)
 
   async function load(q = search) {
     setLoading(true)
@@ -223,7 +237,9 @@ export default function Sessions() {
         <div>
           <h1 className="section-title h3 mb-1">جلسات</h1>
           <p className="muted mb-0">
-            ثبت و ویرایش زمان‌بندی — تاریخ گذشته مجاز نیست
+            {canManage
+              ? 'ثبت و ویرایش زمان‌بندی — تاریخ گذشته مجاز نیست'
+              : 'مشاهده جلسات و ثبت حضور و غیاب زبان‌آموزان'}
           </p>
         </div>
         <input
@@ -235,6 +251,7 @@ export default function Sessions() {
         />
       </div>
 
+      {canManage && (
       <div className="create-panel">
         <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
           <h2 className="h6 fw-bold mb-0">
@@ -376,6 +393,7 @@ export default function Sessions() {
           </div>
         </form>
       </div>
+      )}
 
       {message && <div className="alert alert-success py-2">{message}</div>}
       {error && <div className="alert alert-danger py-2">{error}</div>}
@@ -407,11 +425,17 @@ export default function Sessions() {
                     <td>{row.SessionTypeName}</td>
                     <td>{STATUS_LABEL[row.Status] || row.Status}</td>
                     <td className="text-nowrap">
-                      <RowActions onEdit={() => startEdit(row)} onDelete={() => handleDelete(row)} />
+                      <RowActions
+                        onAttendance={
+                          canAttendance ? () => setAttendanceSessionId(row.Id) : undefined
+                        }
+                        onEdit={canManage ? () => startEdit(row) : undefined}
+                        onDelete={canManage ? () => handleDelete(row) : undefined}
+                      />
                     </td>
                   </tr>
                 ))}
-              {!rows.length && (
+              {!visibleRows.length && (
                 <tr>
                   <td colSpan={7} className="text-center muted py-4">
                     جلسه‌ای ثبت نشده است
@@ -431,6 +455,12 @@ export default function Sessions() {
           />
         </div>
       )}
+
+      <AttendanceModal
+        open={attendanceSessionId != null}
+        sessionId={attendanceSessionId}
+        onClose={() => setAttendanceSessionId(null)}
+      />
     </div>
   )
 }

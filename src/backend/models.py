@@ -121,6 +121,9 @@ FIELD_LABELS_FA: dict[str, str] = {
     "current_password": "رمز فعلی",
     "new_password": "رمز جدید",
     "email": "ایمیل",
+    "full_name": "نام کامل",
+    "role_code": "نقش",
+    "is_active": "فعال بودن",
     "first_name": "نام",
     "last_name": "نام خانوادگی",
     "father_name": "نام پدر",
@@ -276,6 +279,54 @@ class RefreshRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=6, max_length=100)
     new_password: str = Field(..., min_length=8, max_length=100)
+
+
+StaffAssignableRole = Literal[
+    "admin",
+    "secretary",
+    "education",
+    "finance",
+    "teacher",
+    "student",
+    "parent",
+]
+
+
+class StaffUserCreate(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=8, max_length=100)
+    full_name: str = Field(..., min_length=1, max_length=100)
+    email: Optional[str] = Field(None, max_length=100)
+    role_code: StaffAssignableRole
+    teacher_ref: Optional[int] = None
+    student_ref: Optional[int] = None
+    is_active: bool = True
+
+    @field_validator("email")
+    @classmethod
+    def empty_email_to_none(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+
+class StaffUserUpdate(BaseModel):
+    full_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    email: Optional[str] = Field(None, max_length=100)
+    role_code: Optional[StaffAssignableRole] = None
+    teacher_ref: Optional[int] = None
+    student_ref: Optional[int] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = Field(None, min_length=8, max_length=100)
+
+    @field_validator("email")
+    @classmethod
+    def empty_email_to_none(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
 
 
 class TokenResponse(BaseModel):

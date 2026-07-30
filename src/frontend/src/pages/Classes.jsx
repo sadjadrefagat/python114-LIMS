@@ -6,6 +6,7 @@ import VazirSelect from '../components/VazirSelect'
 import JalaliDatePicker, { compareJalali, todayJalaliString } from '../components/JalaliDatePicker'
 import PaginationBar from '../components/PaginationBar'
 import RowActions from '../components/RowActions'
+import ClassDetailModal from '../components/ClassDetailModal'
 import { useClientPagination } from '../hooks/useClientPagination'
 import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 
@@ -35,7 +36,7 @@ const emptyForm = {
 
 export default function Classes() {
   const { hasRole } = useAuth()
-  const canCreate = hasRole('admin', 'secretary')
+  const canCreate = hasRole('admin', 'secretary', 'education')
   const [askConfirm, confirmDialog] = useConfirmDialog()
   const [rows, setRows] = useState([])
   const [courses, setCourses] = useState([])
@@ -50,6 +51,7 @@ export default function Classes() {
   const [showCreate, setShowCreate] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(emptyForm)
+  const [viewClassId, setViewClassId] = useState(null)
   const today = todayJalaliString()
   const paging = useClientPagination(rows)
 
@@ -417,9 +419,11 @@ export default function Classes() {
                     <span className="chip chip-teal">{statusMap[row.Status] || row.Status}</span>
                   </td>
                   <td className="text-nowrap">
-                    {canCreate && (
-                      <RowActions onEdit={() => startEdit(row)} onDelete={() => handleDelete(row)} />
-                    )}
+                    <RowActions
+                      onView={() => setViewClassId(row.Id)}
+                      onEdit={canCreate ? () => startEdit(row) : undefined}
+                      onDelete={canCreate ? () => handleDelete(row) : undefined}
+                    />
                   </td>
                 </tr>
               ))}
@@ -437,6 +441,12 @@ export default function Classes() {
           />
         </div>
       )}
+
+      <ClassDetailModal
+        open={viewClassId != null}
+        classId={viewClassId}
+        onClose={() => setViewClassId(null)}
+      />
     </div>
   )
 }

@@ -168,6 +168,7 @@ export function roleLabel(role) {
   const map = {
     admin: 'مدیر',
     secretary: 'منشی',
+    education: 'مسئول آموزش',
     finance: 'مالی',
     teacher: 'مدرس',
     student: 'زبان‌آموز',

@@ -40,7 +40,7 @@ const emptyForm = {
 
 export default function Courses() {
   const { hasRole } = useAuth()
-  const canCreate = hasRole('admin', 'secretary')
+  const canCreate = hasRole('admin', 'secretary', 'education')
   const [askConfirm, confirmDialog] = useConfirmDialog()
   const [courses, setCourses] = useState([])
   const [languages, setLanguages] = useState([])

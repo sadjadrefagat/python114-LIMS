@@ -60,6 +60,8 @@ from models import (
     ScoreCreate,
     SessionCreate,
     SessionUpdate,
+    StaffUserCreate,
+    StaffUserUpdate,
     StudentCreate,
     StudentUpdate,
     TeacherCreate,
@@ -124,9 +126,30 @@ async def pydantic_validation_handler(_request: Request, exc: ValidationError):
 
 
 # نقش‌های پرکاربرد
-StaffDep = Depends(require_roles("admin", "secretary"))
-FinanceDep = Depends(require_roles("admin", "secretary", "finance"))
-TeacherStaffDep = Depends(require_roles("admin", "secretary", "teacher"))
+AdminDep = Depends(require_roles("admin"))
+StaffDep = Depends(require_roles("admin", "secretary", "education"))
+FinanceDep = Depends(require_roles("admin", "secretary", "education", "finance"))
+TeacherStaffDep = Depends(require_roles("admin", "secretary", "education", "teacher"))
+
+
+def ensure_roles_seed() -> None:
+    """اطمینان از وجود نقش‌های پایه از جمله مسئول آموزش"""
+    roles = [
+        ("admin", "مدیر سیستم"),
+        ("finance", "کارشناس مالی"),
+        ("secretary", "منشی"),
+        ("education", "مسئول آموزش"),
+        ("teacher", "مدرس"),
+        ("student", "زبان‌آموز"),
+        ("parent", "والدین"),
+    ]
+    for code, name in roles:
+        if not fetch_one("SELECT Id FROM Role WHERE Code = ?", (code,)):
+            execute(
+                "INSERT INTO Role ([Code], [Name], [IsActive]) VALUES (?, ?, 1)",
+                (code, name),
+            )
+
 
 TEACHER_PHOTO_MAX_BYTES = 2 * 1024 * 1024
 TEACHER_PHOTO_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"}
@@ -236,6 +259,10 @@ def sync_registration_financial_status(registration_id: int) -> str:
 @app.on_event("startup")
 def on_startup() -> None:
     try:
+        ensure_roles_seed()
+    except Exception as exc:
+        print(f"[startup] ensure_roles_seed failed: {exc}")
+    try:
         ensure_teacher_photo_schema()
     except Exception as exc:
         print(f"[startup] ensure_teacher_photo_schema failed: {exc}")
@@ -315,6 +342,214 @@ def _gregorian_to_jalali(gy: int, gm: int, gd: int) -> tuple[int, int, int]:
         jm = 7 + (days - 186) // 30
         jd = 1 + (days - 186) % 30
     return jy, jm, jd
+
+
+def _jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple[int, int, int]:
+    """تبدیل شمسی به میلادی (مکمل _gregorian_to_jalali)"""
+    jy2 = jy + 1595
+    days = -355668 + (365 * jy2) + ((jy2 // 33) * 8) + (((jy2 % 33) + 3) // 4) + jd
+    if jm < 7:
+        days += (jm - 1) * 31
+    else:
+        days += ((jm - 7) * 30) + 186
+    gy = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        days -= 1
+        gy += 100 * (days // 36524)
+        days %= 36524
+        if days >= 365:
+            days += 1
+    gy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gy += (days - 1) // 365
+        days = (days - 1) % 365
+    gd = days + 1
+    sal_a = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    if (gy % 4 == 0 and gy % 100 != 0) or (gy % 400 == 0):
+        sal_a[2] = 29
+    gm = 1
+    while gm < 13 and gd > sal_a[gm]:
+        gd -= sal_a[gm]
+        gm += 1
+    return gy, gm, gd
+
+
+def _parse_jalali_to_date(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        parts = str(value).strip().split("/")
+        if len(parts) != 3:
+            return None
+        jy, jm, jd = int(parts[0]), int(parts[1]), int(parts[2])
+        gy, gm, gd = _jalali_to_gregorian(jy, jm, jd)
+        return date(gy, gm, gd)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _pct(part: float, whole: float) -> float:
+    if not whole:
+        return 0.0
+    return round(100.0 * float(part) / float(whole), 1)
+
+
+def _parse_time_minutes(value: Optional[str]) -> Optional[int]:
+    if not value:
+        return None
+    try:
+        parts = str(value).strip().split(":")
+        if len(parts) < 2:
+            return None
+        return int(parts[0]) * 60 + int(parts[1])
+    except (ValueError, TypeError):
+        return None
+
+
+def _compute_class_stats(class_id: int, class_row: dict[str, Any]) -> dict[str, Any]:
+    """آمار جلسات، ظرفیت، حضور و مالی یک کلاس"""
+    course = fetch_one(
+        "SELECT Id, Name, SessionsCount, Cost FROM Course WHERE Id = ?",
+        (class_row.get("CourseRef"),),
+    ) or {}
+    planned_sessions = int(course.get("SessionsCount") or 0)
+
+    sessions = fetch_all(
+        """SELECT Id, [Date] AS SessionDate, StartTime, EndTime, Status, IsMakeup
+           FROM Session WHERE ClassRef = ? ORDER BY [Date], StartTime""",
+        (class_id,),
+    )
+
+    by_status: dict[str, int] = {
+        "scheduled": 0,
+        "in_progress": 0,
+        "completed": 0,
+        "cancelled": 0,
+        "rescheduled": 0,
+    }
+    makeup_count = 0
+    duration_sum = 0
+    duration_n = 0
+    for s in sessions:
+        st = (s.get("Status") or "").strip()
+        if st in by_status:
+            by_status[st] += 1
+        if s.get("IsMakeup"):
+            makeup_count += 1
+        start_m = _parse_time_minutes(s.get("StartTime"))
+        end_m = _parse_time_minutes(s.get("EndTime"))
+        if start_m is not None and end_m is not None and end_m > start_m:
+            duration_sum += end_m - start_m
+            duration_n += 1
+
+    total_sessions = len(sessions)
+    held = by_status["completed"]
+    remaining_scheduled = by_status["scheduled"] + by_status["in_progress"]
+    # پیشرفت نسبت به جلسات برنامه‌ریزی‌شده دوره، وگرنه نسبت به جلسات ثبت‌شده
+    progress_base = planned_sessions if planned_sessions > 0 else total_sessions
+    held_pct = _pct(held, progress_base)
+
+    today = _today_jalali()
+    past_dates = [s["SessionDate"] for s in sessions if s.get("SessionDate") and s["SessionDate"] <= today]
+    future_dates = [s["SessionDate"] for s in sessions if s.get("SessionDate") and s["SessionDate"] > today]
+    last_session_date = past_dates[-1] if past_dates else None
+    next_session_date = future_dates[0] if future_dates else None
+
+    # میانگین جلسات برگزارشده در هفته (بر اساس بازه کلاس یا بازه جلسات)
+    span_start = _parse_jalali_to_date(class_row.get("StartDate"))
+    span_end = _parse_jalali_to_date(class_row.get("EndDate"))
+    session_dates = [_parse_jalali_to_date(s.get("SessionDate")) for s in sessions]
+    session_dates = [d for d in session_dates if d]
+    if session_dates:
+        if not span_start or span_start > min(session_dates):
+            span_start = min(session_dates)
+        if not span_end or span_end < max(session_dates):
+            span_end = max(session_dates)
+    weeks = 1.0
+    if span_start and span_end and span_end >= span_start:
+        weeks = max(1.0, (span_end - span_start).days / 7.0)
+    avg_held_per_week = round(held / weeks, 2)
+    avg_all_per_week = round(total_sessions / weeks, 2) if total_sessions else 0.0
+
+    capacity = int(class_row.get("Capacity") or 0)
+    enrolled = int(class_row.get("EnrolledCount") or 0)
+    fill_pct = _pct(enrolled, capacity)
+
+    attendance = fetch_one(
+        """SELECT
+               COUNT(*) AS TotalMarks,
+               SUM(CASE WHEN SS.AttendanceStatus = N'present' THEN 1 ELSE 0 END) AS PresentCount,
+               SUM(CASE WHEN SS.AttendanceStatus = N'absent' THEN 1 ELSE 0 END) AS AbsentCount,
+               SUM(CASE WHEN SS.AttendanceStatus = N'late' THEN 1 ELSE 0 END) AS LateCount,
+               SUM(CASE WHEN SS.AttendanceStatus = N'leave' THEN 1 ELSE 0 END) AS LeaveCount
+           FROM SessionStudent SS
+           JOIN Session S ON SS.SessionRef = S.Id
+           WHERE S.ClassRef = ?""",
+        (class_id,),
+    ) or {}
+    total_marks = int(attendance.get("TotalMarks") or 0)
+    present_count = int(attendance.get("PresentCount") or 0)
+    absent_count = int(attendance.get("AbsentCount") or 0)
+    late_count = int(attendance.get("LateCount") or 0)
+    leave_count = int(attendance.get("LeaveCount") or 0)
+    # حاضر + تأخیر به‌عنوان حضور مؤثر
+    effective_present = present_count + late_count
+    attendance_pct = _pct(effective_present, total_marks)
+
+    finance = fetch_one(
+        """SELECT
+               COUNT(*) AS RegCount,
+               SUM(CASE WHEN R.Status IN (N'active', N'pending_payment', N'pending_approval') THEN 1 ELSE 0 END) AS ActiveLike,
+               SUM(CASE WHEN R.Status = N'withdrawn' THEN 1 ELSE 0 END) AS Withdrawn,
+               SUM(CASE WHEN R.Status = N'completed' THEN 1 ELSE 0 END) AS CompletedRegs,
+               SUM(CASE WHEN R.FinancialStatus = N'debtor' THEN 1 ELSE 0 END) AS Debtors,
+               SUM(CASE WHEN R.FinancialStatus = N'creditor' THEN 1 ELSE 0 END) AS Creditors,
+               SUM(CASE WHEN R.FinancialStatus = N'settled' THEN 1 ELSE 0 END) AS Settled
+           FROM Registration R
+           WHERE R.ClassRef = ?""",
+        (class_id,),
+    ) or {}
+
+    avg_duration = round(duration_sum / duration_n, 1) if duration_n else None
+
+    return {
+        "planned_sessions": planned_sessions,
+        "sessions_total": total_sessions,
+        "sessions_completed": held,
+        "sessions_scheduled": by_status["scheduled"],
+        "sessions_in_progress": by_status["in_progress"],
+        "sessions_cancelled": by_status["cancelled"],
+        "sessions_rescheduled": by_status["rescheduled"],
+        "sessions_remaining": remaining_scheduled,
+        "sessions_held_pct": held_pct,
+        "makeup_count": makeup_count,
+        "avg_sessions_per_week": avg_held_per_week,
+        "avg_all_sessions_per_week": avg_all_per_week,
+        "span_weeks": round(weeks, 1),
+        "last_session_date": last_session_date,
+        "next_session_date": next_session_date,
+        "avg_duration_minutes": avg_duration,
+        "capacity": capacity,
+        "enrolled_count": enrolled,
+        "fill_pct": fill_pct,
+        "seats_left": max(0, capacity - enrolled),
+        "attendance_total_marks": total_marks,
+        "attendance_present": present_count,
+        "attendance_absent": absent_count,
+        "attendance_late": late_count,
+        "attendance_leave": leave_count,
+        "attendance_pct": attendance_pct,
+        "registrations_total": int(finance.get("RegCount") or 0),
+        "registrations_withdrawn": int(finance.get("Withdrawn") or 0),
+        "registrations_completed": int(finance.get("CompletedRegs") or 0),
+        "finance_debtors": int(finance.get("Debtors") or 0),
+        "finance_creditors": int(finance.get("Creditors") or 0),
+        "finance_settled": int(finance.get("Settled") or 0),
+        "course_name": course.get("Name"),
+        "course_cost": course.get("Cost"),
+    }
 
 
 def _today_jalali() -> str:
@@ -520,9 +755,195 @@ async def change_password(body: ChangePasswordRequest, user: dict = AuthDep):
 
 
 @app.get("/auth/roles")
-async def list_roles(user: dict = StaffDep):
+async def list_roles(user: dict = AdminDep):
     rows = fetch_all("SELECT Id, Code, Name, IsActive FROM Role WHERE IsActive = 1 ORDER BY Id")
     return _ok_list("roles", rows)
+
+
+USER_SELECT = """
+    SELECT
+        U.Id, U.Username, U.Email, U.FullName, U.IsActive,
+        U.StudentRef, U.TeacherRef, U.PreferredUILanguage,
+        U.LastLoginAt, U.CreatedAt, U.LockedUntil,
+        R.Code AS RoleCode, R.Name AS RoleName,
+        CASE
+            WHEN U.TeacherRef IS NOT NULL THEN T.FirstName + N' ' + T.LastName
+            ELSE NULL
+        END AS TeacherName,
+        CASE
+            WHEN U.StudentRef IS NOT NULL THEN St.FirstName + N' ' + St.LastName
+            ELSE NULL
+        END AS StudentName
+    FROM AppUser U
+    JOIN Role R ON U.RoleRef = R.Id
+    LEFT JOIN Teacher T ON U.TeacherRef = T.Id
+    LEFT JOIN Student St ON U.StudentRef = St.Id
+"""
+
+
+def _serialize_user_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "Id": row["Id"],
+        "Username": row["Username"],
+        "Email": row.get("Email"),
+        "FullName": row.get("FullName"),
+        "IsActive": bool(row.get("IsActive")),
+        "RoleCode": row.get("RoleCode"),
+        "RoleName": row.get("RoleName"),
+        "StudentRef": row.get("StudentRef"),
+        "TeacherRef": row.get("TeacherRef"),
+        "StudentName": row.get("StudentName"),
+        "TeacherName": row.get("TeacherName"),
+        "LastLoginAt": row.get("LastLoginAt"),
+        "CreatedAt": row.get("CreatedAt"),
+        "LockedUntil": row.get("LockedUntil"),
+    }
+
+
+def _validate_user_links(role_code: str, teacher_ref: Optional[int], student_ref: Optional[int]) -> None:
+    if role_code == "teacher" and not teacher_ref:
+        raise _bad_request("برای نقش مدرس باید پروفایل مدرس را انتخاب کنید")
+    if role_code == "student" and not student_ref:
+        raise _bad_request("برای نقش زبان‌آموز باید پروفایل زبان‌آموز را انتخاب کنید")
+    if teacher_ref and not fetch_one("SELECT Id FROM Teacher WHERE Id = ?", (teacher_ref,)):
+        raise _bad_request("مدرس نامعتبر است")
+    if student_ref and not fetch_one("SELECT Id FROM Student WHERE Id = ?", (student_ref,)):
+        raise _bad_request("زبان‌آموز نامعتبر است")
+
+
+@app.get("/users")
+async def list_users(
+    search: Optional[str] = None,
+    role_code: Optional[str] = None,
+    include_inactive: bool = True,
+    user: dict = AdminDep,
+):
+    query = USER_SELECT + " WHERE 1=1"
+    params: list[Any] = []
+    if not include_inactive:
+        query += " AND U.IsActive = 1"
+    if role_code:
+        query += " AND R.Code = ?"
+        params.append(role_code)
+    if search:
+        like = f"%{search.strip()}%"
+        query += """ AND (
+            U.Username LIKE ? OR U.FullName LIKE ? OR U.Email LIKE ?
+            OR R.Name LIKE ?
+        )"""
+        params.extend([like, like, like, like])
+    query += " ORDER BY U.Id DESC"
+    rows = [_serialize_user_row(r) for r in fetch_all(query, tuple(params))]
+    return _ok_list("users", rows)
+
+
+@app.post("/users", status_code=201)
+async def create_user(body: StaffUserCreate, user: dict = AdminDep):
+    if get_user_by_username(body.username):
+        raise _bad_request("نام کاربری تکراری است")
+    if body.email and fetch_one("SELECT Id FROM AppUser WHERE Email = ?", (body.email,)):
+        raise _bad_request("ایمیل تکراری است")
+    role = fetch_one("SELECT Id, Code FROM Role WHERE Code = ? AND IsActive = 1", (body.role_code,))
+    if not role:
+        raise _bad_request("نقش نامعتبر است")
+    _validate_user_links(body.role_code, body.teacher_ref, body.student_ref)
+
+    new_id = execute_returning_id(
+        """INSERT INTO AppUser
+            ([Username], [Email], [PasswordHash], [FullName], [RoleRef],
+             [StudentRef], [TeacherRef], [IsActive], [PreferredUILanguage])
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, N'fa')""",
+        (
+            body.username.strip(),
+            body.email,
+            hash_password(body.password),
+            body.full_name.strip(),
+            role["Id"],
+            body.student_ref,
+            body.teacher_ref,
+            1 if body.is_active else 0,
+        ),
+    )
+    row = fetch_one(USER_SELECT + " WHERE U.Id = ?", (new_id,))
+    return {"message": "کاربر ایجاد شد", "user": _serialize_user_row(row)}
+
+
+@app.put("/users/{user_id}")
+async def update_user(user_id: int, body: StaffUserUpdate, user: dict = AdminDep):
+    existing = fetch_one(USER_SELECT + " WHERE U.Id = ?", (user_id,))
+    if not existing:
+        raise _not_found("User")
+
+    data = body.model_dump(exclude_unset=True)
+    role_code = data.get("role_code", existing["RoleCode"])
+    teacher_ref = data["teacher_ref"] if "teacher_ref" in data else existing["TeacherRef"]
+    student_ref = data["student_ref"] if "student_ref" in data else existing["StudentRef"]
+    if "role_code" in data and role_code != "teacher" and "teacher_ref" not in data:
+        teacher_ref = None
+    if "role_code" in data and role_code != "student" and "student_ref" not in data:
+        student_ref = None
+
+    _validate_user_links(role_code, teacher_ref, student_ref)
+
+    if "email" in data and data["email"]:
+        dup = fetch_one("SELECT Id FROM AppUser WHERE Email = ? AND Id <> ?", (data["email"], user_id))
+        if dup:
+            raise _bad_request("ایمیل تکراری است")
+
+    role_id = None
+    if "role_code" in data:
+        role = fetch_one("SELECT Id FROM Role WHERE Code = ? AND IsActive = 1", (role_code,))
+        if not role:
+            raise _bad_request("نقش نامعتبر است")
+        role_id = role["Id"]
+
+    # جلوگیری از غیرفعال کردن آخرین ادمین
+    if existing["RoleCode"] == "admin" and (
+        data.get("is_active") is False or ("role_code" in data and role_code != "admin")
+    ):
+        active_admins = fetch_one(
+            """SELECT COUNT(*) AS Cnt
+               FROM AppUser U JOIN Role R ON U.RoleRef = R.Id
+               WHERE R.Code = N'admin' AND U.IsActive = 1 AND U.Id <> ?""",
+            (user_id,),
+        )
+        if not active_admins or int(active_admins["Cnt"] or 0) < 1:
+            raise _bad_request("نمی‌توان آخرین مدیر فعال را حذف/تغییر نقش داد")
+
+    sets: list[str] = []
+    params: list[Any] = []
+    if "full_name" in data:
+        sets.append("[FullName] = ?")
+        params.append(str(data["full_name"]).strip())
+    if "email" in data:
+        sets.append("[Email] = ?")
+        params.append(data["email"])
+    if role_id is not None:
+        sets.append("[RoleRef] = ?")
+        params.append(role_id)
+    if "role_code" in data or "teacher_ref" in data:
+        sets.append("[TeacherRef] = ?")
+        params.append(teacher_ref)
+    if "role_code" in data or "student_ref" in data:
+        sets.append("[StudentRef] = ?")
+        params.append(student_ref)
+    if "is_active" in data:
+        sets.append("[IsActive] = ?")
+        params.append(1 if data["is_active"] else 0)
+    if data.get("password"):
+        sets.append("[PasswordHash] = ?")
+        params.append(hash_password(data["password"]))
+
+    if not sets:
+        raise _bad_request("هیچ فیلدی برای به‌روزرسانی ارسال نشده است")
+
+    params.append(user_id)
+    execute(f"UPDATE AppUser SET {', '.join(sets)} WHERE Id = ?", tuple(params))
+    if data.get("password") or data.get("is_active") is False:
+        revoke_all_user_sessions(user_id)
+
+    row = fetch_one(USER_SELECT + " WHERE U.Id = ?", (user_id,))
+    return {"message": "کاربر به‌روزرسانی شد", "user": _serialize_user_row(row)}
 
 
 # ---------------------------------------------------------------------------
@@ -1304,7 +1725,16 @@ async def get_class(class_id: int):
     row = fetch_one(CLASS_SELECT + " WHERE Cl.Id = ?", (class_id,))
     if not row:
         raise _not_found("Class")
-    return {"class": row}
+    stats = _compute_class_stats(class_id, row)
+    recent_sessions = fetch_all(
+        """SELECT TOP 12
+               S.Id, S.[Date] AS SessionDate, S.StartTime, S.EndTime, S.Status, S.IsMakeup
+           FROM Session S
+           WHERE S.ClassRef = ?
+           ORDER BY S.[Date] DESC, S.Id DESC""",
+        (class_id,),
+    )
+    return {"class": row, "stats": stats, "recent_sessions": recent_sessions}
 
 
 @app.post("/classes", status_code=201)
@@ -1653,6 +2083,48 @@ async def bulk_attendance(body: AttendanceBulkCreate, user: dict = TeacherStaffD
             )
             results.append({"id": new_id, "student_ref": item.student_ref, "action": "created"})
     return {"message": "Bulk attendance saved", "results": results}
+
+
+@app.get("/sessions/{session_id}/roster")
+async def session_roster(session_id: int, user: dict = TeacherStaffDep):
+    """لیست زبان‌آموزان کلاس برای ثبت حضور و غیاب جلسه"""
+    session = fetch_one(
+        SESSION_SELECT + " WHERE S.Id = ?",
+        (session_id,),
+    )
+    if not session:
+        raise _not_found("Session")
+
+    students = fetch_all(
+        """SELECT
+               St.Id AS StudentRef,
+               St.FirstName + N' ' + St.LastName AS StudentName,
+               R.Status AS EnrollmentStatus,
+               SS.AttendanceStatus,
+               SS.RecordedAt
+           FROM Registration R
+           JOIN Student St ON R.Studentref = St.Id
+           LEFT JOIN SessionStudent SS
+               ON SS.SessionRef = ? AND SS.StudentRef = St.Id
+           WHERE R.ClassRef = ?
+             AND R.Status IN (N'active', N'pending_payment', N'pending_approval', N'frozen')
+           ORDER BY St.LastName, St.FirstName""",
+        (session_id, session["ClassRef"]),
+    )
+    return {
+        "session": {
+            "Id": session["Id"],
+            "ClassRef": session["ClassRef"],
+            "CourseName": session.get("CourseName"),
+            "TeacherName": session.get("TeacherName"),
+            "Date": session.get("Date"),
+            "StartTime": session.get("StartTime"),
+            "EndTime": session.get("EndTime"),
+            "Status": session.get("Status"),
+        },
+        "students": students,
+        "count": len(students),
+    }
 
 
 # ---------------------------------------------------------------------------

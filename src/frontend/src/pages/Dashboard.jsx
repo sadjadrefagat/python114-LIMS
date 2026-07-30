@@ -76,7 +76,7 @@ function ChartCard({ color, title, subtitle, children }) {
 export default function Dashboard() {
   const { user, hasRole } = useAuth()
   const canOps = hasRole('admin', 'secretary', 'finance')
-  const canStaff = hasRole('admin', 'secretary')
+  const canStaff = hasRole('admin', 'secretary', 'education')
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')

@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 
-const GROUPS = [
+const STAFF_GROUPS = [
   {
     title: 'آموزش',
     items: [
@@ -23,11 +24,34 @@ const GROUPS = [
     title: 'تنظیمات',
     items: [
       { to: '/lookups', label: 'نوع جلسه و شعب', icon: 'bi-gear' },
+      { to: '/users', label: 'کاربران و دسترسی‌ها', icon: 'bi-shield-lock', adminOnly: true },
+    ],
+  },
+]
+
+const TEACHER_GROUPS = [
+  {
+    title: 'کلاس من',
+    items: [
+      { to: '/sessions', label: 'جلسات و حضور و غیاب', icon: 'bi-clipboard-check' },
+      { to: '/dashboard', label: 'داشبورد', icon: 'bi-speedometer2' },
     ],
   },
 ]
 
 export default function AdminSidebar({ open, onClose }) {
+  const { hasRole, user } = useAuth()
+  const isStaff = hasRole('admin', 'secretary', 'education')
+  const isAdmin = user?.role === 'admin'
+  const groups = isStaff
+    ? STAFF_GROUPS.map((g) => ({
+        ...g,
+        items: g.items.filter((item) => !item.adminOnly || isAdmin),
+      }))
+    : TEACHER_GROUPS
+  const kicker = isStaff ? 'پنل مدیریت' : 'پنل مدرس'
+  const title = isStaff ? 'مدیریت آموزشگاه' : 'جلسات و حضور'
+
   return (
     <>
       <div
@@ -38,12 +62,12 @@ export default function AdminSidebar({ open, onClose }) {
       <aside
         id="adminSidebar"
         className={`admin-sidebar ${open ? 'is-open' : ''}`}
-        aria-label="منوی مدیریت"
+        aria-label={kicker}
       >
         <div className="admin-sidebar-head">
           <div>
-            <div className="admin-sidebar-kicker">پنل مدیریت</div>
-            <h2 className="admin-sidebar-title">مدیریت آموزشگاه</h2>
+            <div className="admin-sidebar-kicker">{kicker}</div>
+            <h2 className="admin-sidebar-title">{title}</h2>
           </div>
           <button
             type="button"
@@ -56,7 +80,7 @@ export default function AdminSidebar({ open, onClose }) {
         </div>
 
         <nav className="admin-sidebar-nav">
-          {GROUPS.map((group) => (
+          {groups.map((group) => (
             <div key={group.title} className="admin-sidebar-group">
               <div className="admin-sidebar-group-title">{group.title}</div>
               <ul className="admin-sidebar-list">

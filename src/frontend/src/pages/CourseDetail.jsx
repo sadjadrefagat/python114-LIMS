@@ -21,11 +21,14 @@ export default function CourseDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, isAuthenticated, loading: authLoading } = useAuth()
+  const { user, isAuthenticated, loading: authLoading, hasRole } = useAuth()
+  const isStaff = hasRole('admin', 'secretary', 'education')
 
   const [course, setCourse] = useState(null)
   const [classes, setClasses] = useState([])
+  const [students, setStudents] = useState([])
   const [selectedClass, setSelectedClass] = useState('')
+  const [selectedStudent, setSelectedStudent] = useState('')
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
@@ -46,6 +49,15 @@ export default function CourseDetail() {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
   }, [id])
+
+  useEffect(() => {
+    if (!isStaff) return undefined
+    api
+      .get('/students')
+      .then((d) => setStudents(d.students || []))
+      .catch(() => setStudents([]))
+    return undefined
+  }, [isStaff])
 
   useEffect(() => {
     if (!course || location.hash !== '#enroll') return
@@ -81,8 +93,13 @@ export default function CourseDetail() {
       return
     }
 
-    if (!user?.student_ref) {
-      setError('حساب شما به پروفایل زبان‌آموز وصل نیست. با حساب زبان‌آموز وارد شوید یا از منشی کمک بگیرید.')
+    const studentRef = isStaff ? Number(selectedStudent) : user?.student_ref
+    if (!studentRef) {
+      setError(
+        isStaff
+          ? 'لطفاً زبان‌آموز را انتخاب کنید'
+          : 'حساب شما به پروفایل زبان‌آموز وصل نیست. با حساب زبان‌آموز وارد شوید یا از منشی کمک بگیرید.',
+      )
       return
     }
 
@@ -100,14 +117,18 @@ export default function CourseDetail() {
     setBusy(true)
     try {
       await api.post('/enrollments', {
-        student_ref: user.student_ref,
+        student_ref: studentRef,
         class_ref: Number(selectedClass),
         course_ref: Number(id),
         date: todayJalaliString(),
         status: 'pending_payment',
         financial_status: 'debtor',
       })
-      setMessage('ثبت‌نام شما با موفقیت انجام شد. وضعیت: در انتظار پرداخت')
+      setMessage(
+        isStaff
+          ? 'ثبت‌نام زبان‌آموز با موفقیت انجام شد. وضعیت: در انتظار پرداخت'
+          : 'ثبت‌نام شما با موفقیت انجام شد. وضعیت: در انتظار پرداخت',
+      )
       const refreshed = await api.get(`/classes?course_ref=${id}`)
       setClasses(refreshed.classes || [])
     } catch (err) {
@@ -193,23 +214,38 @@ export default function CourseDetail() {
       <div id="enroll" className="create-panel mt-4 fade-up-delay">
         <h2 className="h5 fw-bold section-title mb-1">ثبت‌نام در این دوره</h2>
         <p className="muted small mb-3">
-          یکی از کلاس‌های فعال این دوره را انتخاب کنید و ثبت‌نام را نهایی کنید.
+          {isStaff
+            ? 'به‌عنوان مدیر/منشی می‌توانید برای هر زبان‌آموز کلاس را انتخاب و ثبت‌نام کنید.'
+            : 'یکی از کلاس‌های فعال این دوره را انتخاب کنید و ثبت‌نام را نهایی کنید.'}
         </p>
 
         {message && <div className="alert alert-success py-2">{message}</div>}
         {error && course && <div className="alert alert-danger py-2">{error}</div>}
 
         {!classes.length ? (
-          <div className="empty-state py-3">
-            هنوز کلاسی برای این دوره تعریف نشده است.
-          </div>
+          <div className="empty-state py-3">هنوز کلاسی برای این دوره تعریف نشده است.</div>
         ) : !openClasses.length ? (
           <div className="alert alert-warning py-2 mb-0">
             در حال حاضر کلاس بازی برای ثبت‌نام وجود ندارد.
           </div>
         ) : (
           <form className="row g-3 align-items-end" onSubmit={handleEnroll}>
-            <div className="col-lg-8">
+            {isStaff && (
+              <div className="col-lg-5">
+                <label className="form-label">زبان‌آموز</label>
+                <VazirSelect
+                  required
+                  value={selectedStudent}
+                  onChange={setSelectedStudent}
+                  placeholder="انتخاب زبان‌آموز"
+                  options={students.map((s) => ({
+                    value: String(s.Id),
+                    label: `${s.FirstName} ${s.LastName} · ${s.NationalCode || s.Id}`,
+                  }))}
+                />
+              </div>
+            )}
+            <div className={isStaff ? 'col-lg-4' : 'col-lg-8'}>
               <label className="form-label">انتخاب کلاس</label>
               <VazirSelect
                 required
@@ -219,7 +255,7 @@ export default function CourseDetail() {
                 options={classOptions.filter((o) => !o.disabled)}
               />
             </div>
-            <div className="col-lg-4 d-grid">
+            <div className={isStaff ? 'col-lg-3' : 'col-lg-4'} style={{ display: 'grid' }}>
               {!isAuthenticated ? (
                 <div className="d-grid gap-2">
                   <Link
@@ -239,7 +275,7 @@ export default function CourseDetail() {
                 </div>
               ) : (
                 <button className="btn btn-brand rounded-pill py-2" disabled={busy}>
-                  {busy ? 'در حال ثبت‌نام...' : 'ثبت‌نام در این دوره'}
+                  {busy ? 'در حال ثبت‌نام...' : isStaff ? 'ثبت‌نام زبان‌آموز' : 'ثبت‌نام در این دوره'}
                 </button>
               )}
             </div>

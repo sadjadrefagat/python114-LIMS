@@ -1,9 +1,31 @@
 /**
- * دکمه‌های آیکونی ویرایش / حذف (مثل کارت دوره)
+ * دکمه‌های آیکونی مشاهده / حضور / ویرایش / حذف
  */
-export default function RowActions({ onEdit, onDelete }) {
+export default function RowActions({ onView, onAttendance, onEdit, onDelete }) {
   return (
     <div className="row-actions">
+      {onView ? (
+        <button
+          type="button"
+          className="row-action is-view"
+          title="جزئیات"
+          aria-label="جزئیات"
+          onClick={onView}
+        >
+          <i className="bi bi-eye" />
+        </button>
+      ) : null}
+      {onAttendance ? (
+        <button
+          type="button"
+          className="row-action is-attendance"
+          title="حضور و غیاب"
+          aria-label="حضور و غیاب"
+          onClick={onAttendance}
+        >
+          <i className="bi bi-clipboard-check" />
+        </button>
+      ) : null}
       {onEdit ? (
         <button
           type="button"

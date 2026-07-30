@@ -17,7 +17,7 @@ const STAFF_LINKS = [
 export default function NotFound() {
   const navigate = useNavigate()
   const { isAuthenticated, hasRole } = useAuth()
-  const isStaff = hasRole('admin', 'secretary')
+  const isStaff = hasRole('admin', 'secretary', 'education')
 
   function goBack() {
     if (window.history.length > 1) navigate(-1)

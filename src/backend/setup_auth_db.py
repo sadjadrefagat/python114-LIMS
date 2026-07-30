@@ -64,6 +64,7 @@ ROLES = [
     ("admin", "مدیر سیستم"),
     ("finance", "کارشناس مالی"),
     ("secretary", "منشی"),
+    ("education", "مسئول آموزش"),
     ("teacher", "مدرس"),
     ("student", "زبان‌آموز"),
     ("parent", "والدین"),
