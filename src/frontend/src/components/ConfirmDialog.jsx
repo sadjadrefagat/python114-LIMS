@@ -10,7 +10,7 @@ export default function ConfirmDialog({
   message = 'آیا از انجام این کار مطمئن هستید؟',
   details = [],
   confirmLabel = 'حذف',
-  cancelLabel = 'انصراف',
+  cancelLabel = 'بازگشت',
   tone = 'danger',
   busy = false,
   onConfirm,
@@ -45,6 +45,14 @@ export default function ConfirmDialog({
 
   const rows = (details || []).filter((d) => d && d.value != null && String(d.value).trim() !== '')
 
+  const icon =
+    tone === 'warn'
+      ? 'bi-exclamation-circle'
+      : tone === 'password'
+        ? 'bi-shield-lock'
+        : 'bi-exclamation-triangle'
+  const okIcon = tone === 'danger' ? 'bi-trash3' : 'bi-check2-circle'
+
   return createPortal(
     <div
       className={`confirm-overlay tone-${tone}`}
@@ -62,7 +70,7 @@ export default function ConfirmDialog({
         aria-describedby={descId}
       >
         <div className="confirm-dialog-icon" aria-hidden="true">
-          <i className="bi bi-exclamation-triangle" />
+          <i className={`bi ${icon}`} />
         </div>
 
         <h2 id={titleId} className="confirm-dialog-title">
@@ -95,7 +103,7 @@ export default function ConfirmDialog({
           </button>
           <button
             type="button"
-            className="btn confirm-btn-ok"
+            className={`btn confirm-btn-ok${tone !== 'danger' ? ' password-reset-ok' : ''}`}
             disabled={busy}
             onClick={onConfirm}
           >
@@ -106,7 +114,7 @@ export default function ConfirmDialog({
               </>
             ) : (
               <>
-                <i className="bi bi-trash3" aria-hidden="true" />
+                <i className={`bi ${okIcon}`} aria-hidden="true" />
                 {confirmLabel}
               </>
             )}

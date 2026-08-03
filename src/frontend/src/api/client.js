@@ -26,6 +26,30 @@ function setStoredUser(user) {
   else localStorage.setItem('lims_user', JSON.stringify(user))
 }
 
+const CART_SESSION_KEY = 'lims_cart_session'
+
+export function getCartSession() {
+  try {
+    return localStorage.getItem(CART_SESSION_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+export function setCartSession(key) {
+  try {
+    if (!key) localStorage.removeItem(CART_SESSION_KEY)
+    else localStorage.setItem(CART_SESSION_KEY, key)
+  } catch {
+    /* ignore */
+  }
+}
+
+export function rememberCartSession(data) {
+  if (data?.session_key) setCartSession(data.session_key)
+  return data
+}
+
 async function request(path, options = {}) {
   const tokens = getTokens()
   const headers = {
@@ -36,6 +60,11 @@ async function request(path, options = {}) {
 
   if (tokens?.access_token && !options.skipAuth) {
     headers.Authorization = `Bearer ${tokens.access_token}`
+  }
+
+  const cartSession = getCartSession()
+  if (cartSession && !headers['X-Cart-Session']) {
+    headers['X-Cart-Session'] = cartSession
   }
 
   let response
@@ -89,10 +118,15 @@ async function request(path, options = {}) {
       message = data.message
     } else if (response.status === 502 || response.status === 503 || response.status === 504) {
       message = 'سرور در دسترس نیست. چند لحظه بعد دوباره تلاش کنید.'
+    } else if (response.status === 404) {
+      message = 'آدرس API پیدا نشد — احتمالاً بک‌اند قدیمی است؛ uvicorn را ری‌استارت کنید.'
     } else {
       message = `خطایی رخ داد (کد ${response.status})`
     }
     // اگر هنوز پیام انگلیسی خام ماند، پیام کلی فارسی
+    if (/^not\s*found$/i.test(message.trim())) {
+      message = 'آدرس API پیدا نشد — بک‌اند را از پوشه src/backend ری‌استارت کنید.'
+    }
     if (/string does not match|string_type|field required|value is not/i.test(message)) {
       message = data?.message || 'داده ارسالی نامعتبر است'
     }

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import pyodbc
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -17,6 +18,7 @@ from pydantic import ValidationError
 from auth import (
     create_access_token,
     create_refresh_token_value,
+    decode_access_token,
     find_valid_refresh_session,
     get_current_user,
     get_user_by_id,
@@ -36,7 +38,21 @@ from auth import (
 )
 from config import settings
 from database import db_cursor, execute, execute_returning_id, fetch_all, fetch_one, health_check
+from placement import ensure_placement_schema, router as placement_router
+from shop import ensure_shop_schema, router as shop_router
+from activity import (
+    ACTION_LABELS,
+    ENTITY_LABELS,
+    ensure_activity_schema,
+    list_activities,
+    log_activity,
+    path_to_entity,
+)
 from models import (
+    AdminResetPasswordRequest,
+    AGE_GROUP_RULES,
+    age_group_catalog,
+    age_group_range_label,
     AttendanceBulkCreate,
     AttendanceCreate,
     BranchCreate,
@@ -55,17 +71,21 @@ from models import (
     LevelUpdate,
     LoginRequest,
     PaymentCreate,
+    PaymentUpdate,
     RefreshRequest,
     RegisterRequest,
     ScoreCreate,
+    ScoreUpdate,
     SessionCreate,
     SessionUpdate,
     StaffUserCreate,
     StaffUserUpdate,
     StudentCreate,
+    StudentBulkDelete,
     StudentUpdate,
     TeacherCreate,
     TeacherUpdate,
+    ThemeUpdateRequest,
     format_validation_errors,
 )
 
@@ -82,6 +102,91 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(shop_router)
+app.include_router(placement_router)
+
+
+SKIP_ACTIVITY_PREFIXES = (
+    "/docs",
+    "/openapi",
+    "/redoc",
+    "/health",
+    "/time",
+    "/favicon",
+)
+
+
+@app.middleware("http")
+async def activity_audit_middleware(request: Request, call_next):
+    response = await call_next(request)
+    try:
+        path = request.url.path or ""
+        method = (request.method or "").upper()
+        if any(path.startswith(p) for p in SKIP_ACTIVITY_PREFIXES):
+            return response
+        # همهٔ تغییرات + ورود/خروج
+        interesting = method in ("POST", "PUT", "PATCH", "DELETE") or path.startswith("/auth/")
+        if not interesting:
+            return response
+        if method == "GET":
+            return response
+
+        user = None
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            try:
+                payload = decode_access_token(auth.split(" ", 1)[1].strip())
+                uid = int(payload.get("sub") or 0)
+                if uid:
+                    user = get_user_by_id(uid)
+            except Exception:
+                user = None
+
+        entity, _ = path_to_entity(path)
+        action = {
+            "POST": "create",
+            "PUT": "update",
+            "PATCH": "update",
+            "DELETE": "delete",
+        }.get(method, "request")
+        if path.startswith("/auth/login"):
+            action = "login"
+            entity = "auth"
+        elif path.startswith("/auth/logout"):
+            action = "logout"
+            entity = "auth"
+        elif path.startswith("/auth/register"):
+            action = "register"
+            entity = "auth"
+
+        status = response.status_code
+        entity_fa = ENTITY_LABELS.get(entity, entity)
+        action_fa = ACTION_LABELS.get(action, action)
+        ok = status < 400
+        message = f"{action_fa} {entity_fa}" if ok else f"ناموفق: {action_fa} {entity_fa} ({status})"
+        if path.startswith("/auth/login") and ok:
+            message = "ورود موفق به سامانه"
+        elif path.startswith("/auth/login") and not ok:
+            message = "تلاش ناموفق برای ورود"
+        elif path.startswith("/auth/logout") and ok:
+            message = "خروج از سامانه"
+
+        ip = request.client.host if request.client else None
+        log_activity(
+            message=message,
+            action_code=action,
+            entity_type=entity,
+            user=user,
+            method=method,
+            path=path,
+            status_code=status,
+            ip_address=ip,
+            detail={"query": str(request.url.query)[:200] if request.url.query else None},
+        )
+    except Exception as exc:
+        print(f"[activity] middleware log failed: {exc}")
+    return response
 
 
 @app.exception_handler(pyodbc.IntegrityError)
@@ -130,6 +235,8 @@ AdminDep = Depends(require_roles("admin"))
 StaffDep = Depends(require_roles("admin", "secretary", "education"))
 FinanceDep = Depends(require_roles("admin", "secretary", "education", "finance"))
 TeacherStaffDep = Depends(require_roles("admin", "secretary", "education", "teacher"))
+# خواندن فهرست زبان‌آموز برای صفحات نمرات / پرداخت / ثبت‌نام
+StudentsReadDep = Depends(require_roles("admin", "secretary", "education", "finance", "teacher"))
 
 
 def ensure_roles_seed() -> None:
@@ -216,21 +323,141 @@ def compute_finance_metrics(course_cost: Any, paid_amount: Any) -> dict[str, Any
         intensity = int(round(min(100.0, max(0.0, balance / due * 100.0))))
     else:
         status, intensity = "settled", 100
+    debt = max(0.0, -balance)
+    credit = max(0.0, balance)
     return {
         "CourseCost": due,
         "PaidAmount": paid,
         "Balance": balance,
+        "DebtAmount": debt,
+        "CreditAmount": credit,
         "FinanceIntensity": intensity,
         "DerivedFinancialStatus": status,
     }
 
 
 def enrich_enrollment_finance(row: dict[str, Any]) -> dict[str, Any]:
-    metrics = compute_finance_metrics(row.get("CourseCost"), row.get("PaidAmount"))
+    """وضعیت مالی همیشه از شهریه و پرداخت‌های موفق محاسبه می‌شود (هم‌تراز با مانده حساب)."""
+    linked = float(row.get("PaidAmount") or 0)
+    allocated = float(row.get("PaidAllocatedFromUnlinked") or 0)
+    effective_paid = linked + allocated
+    metrics = compute_finance_metrics(row.get("CourseCost"), effective_paid)
+    stored = (row.get("FinancialStatus") or "").strip()
+    if stored == "partial":
+        stored = "debtor"
     row.update(metrics)
-    # نمایش و منطق UI بر اساس وضعیت محاسبه‌شده
+    row["StoredFinancialStatus"] = stored or None
+    row["PaidLinked"] = linked
+    row["PaidAllocatedFromUnlinked"] = allocated
+    row["PaidAmount"] = effective_paid  # مبلغ مؤثر برای نمایش مانده
     row["FinancialStatus"] = metrics["DerivedFinancialStatus"]
+    row["DebtAmount"] = metrics["DebtAmount"]
+    row["CreditAmount"] = metrics["CreditAmount"]
+    row["Balance"] = metrics["Balance"]
+    row["FinanceIntensity"] = metrics["FinanceIntensity"]
     return row
+
+
+def _unallocated_paid_by_student(student_ids: list[int]) -> dict[int, float]:
+    if not student_ids:
+        return {}
+    placeholders = ",".join("?" for _ in student_ids)
+    rows = fetch_all(
+        f"""
+        SELECT StudentRef, ISNULL(SUM(Amount), 0) AS Total
+        FROM Payment
+        WHERE Status = N'paid'
+          AND RegistrationRef IS NULL
+          AND StudentRef IN ({placeholders})
+        GROUP BY StudentRef
+        """,
+        tuple(student_ids),
+    )
+    return {int(r["StudentRef"]): float(r["Total"] or 0) for r in rows}
+
+
+def apply_unallocated_payments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    پرداخت‌های موفق بدون ثبت‌نام را به بدهی ثبت‌نام‌های همان زبان‌آموز تخصیص می‌دهد (FIFO بر اساس Id).
+    """
+    if not rows:
+        return rows
+    by_student: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        by_student.setdefault(int(r["StudentRef"]), []).append(r)
+
+    unalloc_map = _unallocated_paid_by_student(list(by_student.keys()))
+    out: list[dict[str, Any]] = []
+    for sid, items in by_student.items():
+        remaining = float(unalloc_map.get(sid, 0))
+        # قدیمی‌ترین ثبت‌نام‌ها اول بدهی‌شان پوشش داده شود
+        ordered = sorted(items, key=lambda x: (str(x.get("Date") or ""), int(x["Id"])))
+        for r in ordered:
+            linked = float(r.get("PaidAmount") or 0)
+            due = float(r.get("CourseCost") or 0)
+            debt = max(0.0, due - linked)
+            applied = min(debt, remaining) if remaining > 0 else 0.0
+            remaining -= applied
+            r = dict(r)
+            r["PaidAllocatedFromUnlinked"] = applied
+            r["StudentUnallocatedPaid"] = float(unalloc_map.get(sid, 0))
+            out.append(enrich_enrollment_finance(r))
+        # اگر هنوز اعتبار تخصیص‌نیافته ماند، روی آخرین ردیف علامت بزن
+        if remaining > 0 and out:
+            # پیدا کردن آخرین آیتم این دانشجو در out
+            for i in range(len(out) - 1, -1, -1):
+                if int(out[i]["StudentRef"]) == sid:
+                    out[i]["StudentUnallocatedRemaining"] = remaining
+                    # مازاد به‌عنوان بستانکاری اضافه روی همان ثبت‌نام
+                    if remaining > 0:
+                        linked = float(out[i].get("PaidLinked") or 0)
+                        allocated = float(out[i].get("PaidAllocatedFromUnlinked") or 0) + remaining
+                        out[i]["PaidAllocatedFromUnlinked"] = allocated
+                        metrics = compute_finance_metrics(out[i].get("CourseCost"), linked + allocated)
+                        out[i].update(metrics)
+                        out[i]["PaidAmount"] = linked + allocated
+                        out[i]["FinancialStatus"] = metrics["DerivedFinancialStatus"]
+                        out[i]["DebtAmount"] = metrics["DebtAmount"]
+                        out[i]["CreditAmount"] = metrics["CreditAmount"]
+                        out[i]["Balance"] = metrics["Balance"]
+                        out[i]["FinanceIntensity"] = metrics["FinanceIntensity"]
+                        out[i]["StudentUnallocatedRemaining"] = 0
+                    break
+    # حفظ ترتیب اولیه فهرست
+    by_id = {int(r["Id"]): r for r in out}
+    return [by_id[int(r["Id"])] for r in rows if int(r["Id"]) in by_id]
+
+
+def repair_orphan_payments() -> int:
+    """
+    اگر زبان‌آموز فقط یک ثبت‌نام دارد، پرداخت‌های بدون RegistrationRef را به همان وصل کن.
+    """
+    orphans = fetch_all(
+        """
+        SELECT P.Id, P.StudentRef
+        FROM Payment P
+        WHERE P.RegistrationRef IS NULL
+        """
+    )
+    fixed = 0
+    touched: set[int] = set()
+    for o in orphans:
+        regs = fetch_all(
+            "SELECT Id FROM Registration WHERE Studentref = ? ORDER BY Id",
+            (o["StudentRef"],),
+        )
+        if len(regs) != 1:
+            continue
+        reg_id = int(regs[0]["Id"])
+        execute(
+            "UPDATE Payment SET RegistrationRef = ? WHERE Id = ?",
+            (reg_id, o["Id"]),
+        )
+        touched.add(reg_id)
+        fixed += 1
+    for reg_id in touched:
+        sync_registration_financial_status(reg_id)
+    return fixed
 
 
 def sync_registration_financial_status(registration_id: int) -> str:
@@ -256,12 +483,53 @@ def sync_registration_financial_status(registration_id: int) -> str:
     return status
 
 
+def sync_all_registration_financial_statuses() -> int:
+    """همگام‌سازی همهٔ ثبت‌نام‌ها تا برچسب مالی با مانده حساب یکی شود"""
+    rows = fetch_all(
+        """SELECT R.Id, R.FinancialStatus, C.Cost AS CourseCost,
+                  ISNULL((
+                      SELECT SUM(P.Amount) FROM Payment P
+                      WHERE P.RegistrationRef = R.Id AND P.Status = N'paid'
+                  ), 0) AS PaidAmount
+           FROM Registration R
+           JOIN Course C ON R.CourseRef = C.Id"""
+    )
+    fixed = 0
+    for r in rows:
+        status = compute_finance_metrics(r.get("CourseCost"), r.get("PaidAmount"))["DerivedFinancialStatus"]
+        stored = (r.get("FinancialStatus") or "").strip()
+        if stored == "partial":
+            stored = "debtor"
+        if stored != status:
+            execute(
+                "UPDATE Registration SET FinancialStatus = ? WHERE Id = ?",
+                (status, r["Id"]),
+            )
+            fixed += 1
+    return fixed
+
+
+def ensure_ui_theme_schema() -> None:
+    """ستون تم رابط کاربری برای هر حساب"""
+    execute(
+        """
+        IF COL_LENGTH('dbo.AppUser', 'UiTheme') IS NULL
+            ALTER TABLE dbo.AppUser ADD UiTheme NVARCHAR(30) NOT NULL
+                CONSTRAINT DF_AppUser_UiTheme DEFAULT (N'light')
+        """
+    )
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     try:
         ensure_roles_seed()
     except Exception as exc:
         print(f"[startup] ensure_roles_seed failed: {exc}")
+    try:
+        ensure_ui_theme_schema()
+    except Exception as exc:
+        print(f"[startup] ensure_ui_theme_schema failed: {exc}")
     try:
         ensure_teacher_photo_schema()
     except Exception as exc:
@@ -270,6 +538,114 @@ def on_startup() -> None:
         ensure_financial_status_schema()
     except Exception as exc:
         print(f"[startup] ensure_financial_status_schema failed: {exc}")
+    try:
+        n_fix = repair_orphan_payments()
+        if n_fix:
+            print(f"[startup] linked {n_fix} orphan payment(s) to sole enrollment")
+    except Exception as exc:
+        print(f"[startup] repair_orphan_payments failed: {exc}")
+    try:
+        n = sync_all_registration_financial_statuses()
+        if n:
+            print(f"[startup] synced FinancialStatus on {n} enrollment(s)")
+    except Exception as exc:
+        print(f"[startup] sync_all_registration_financial_statuses failed: {exc}")
+    try:
+        ensure_shop_schema()
+    except Exception as exc:
+        print(f"[startup] ensure_shop_schema failed: {exc}")
+    try:
+        ensure_activity_schema()
+    except Exception as exc:
+        print(f"[startup] ensure_activity_schema failed: {exc}")
+    try:
+        ensure_score_schema()
+    except Exception as exc:
+        print(f"[startup] ensure_score_schema failed: {exc}")
+    try:
+        ensure_placement_schema()
+    except Exception as exc:
+        print(f"[startup] ensure_placement_schema failed: {exc}")
+
+
+def ensure_score_schema() -> None:
+    """ستون‌های StudentRef / SuggestedLevelRef و امکان ثبت تعیین‌سطح بدون ثبت‌نام"""
+    execute(
+        """
+        IF COL_LENGTH('dbo.Score', 'StudentRef') IS NULL
+            ALTER TABLE dbo.Score ADD StudentRef INT NULL
+        """
+    )
+    execute(
+        """
+        IF COL_LENGTH('dbo.Score', 'SuggestedLevelRef') IS NULL
+            ALTER TABLE dbo.Score ADD SuggestedLevelRef INT NULL
+        """
+    )
+    execute(
+        """
+        UPDATE Sc
+           SET StudentRef = R.Studentref
+        FROM dbo.Score Sc
+        JOIN dbo.Registration R ON Sc.RegistrationRef = R.Id
+        WHERE Sc.StudentRef IS NULL AND Sc.RegistrationRef IS NOT NULL
+        """
+    )
+
+    nullable = fetch_one(
+        """
+        SELECT c.is_nullable AS IsNullable
+        FROM sys.columns c
+        WHERE c.object_id = OBJECT_ID(N'dbo.Score') AND c.name = N'RegistrationRef'
+        """
+    )
+    if nullable and int(nullable.get("IsNullable") or 0) == 0:
+        fk = fetch_one(
+            """
+            SELECT TOP 1 fk.name AS FkName
+            FROM sys.foreign_keys fk
+            JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+            JOIN sys.columns c
+              ON fkc.parent_object_id = c.object_id AND fkc.parent_column_id = c.column_id
+            WHERE fk.parent_object_id = OBJECT_ID(N'dbo.Score') AND c.name = N'RegistrationRef'
+            """
+        )
+        if fk and fk.get("FkName"):
+            execute(f"ALTER TABLE dbo.Score DROP CONSTRAINT [{fk['FkName']}]")
+        execute("ALTER TABLE dbo.Score ALTER COLUMN RegistrationRef INT NULL")
+        execute(
+            """
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.foreign_keys
+                WHERE name = N'FK_Score_Registration' AND parent_object_id = OBJECT_ID(N'dbo.Score')
+            )
+                ALTER TABLE dbo.Score WITH CHECK ADD CONSTRAINT FK_Score_Registration
+                  FOREIGN KEY (RegistrationRef) REFERENCES dbo.Registration(Id)
+            """
+        )
+
+    execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.foreign_keys
+            WHERE name = N'FK_Score_Student' AND parent_object_id = OBJECT_ID(N'dbo.Score')
+        )
+        AND COL_LENGTH('dbo.Score', 'StudentRef') IS NOT NULL
+            ALTER TABLE dbo.Score WITH CHECK ADD CONSTRAINT FK_Score_Student
+              FOREIGN KEY (StudentRef) REFERENCES dbo.Student(Id)
+        """
+    )
+    execute(
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.foreign_keys
+            WHERE name = N'FK_Score_SuggestedLevel' AND parent_object_id = OBJECT_ID(N'dbo.Score')
+        )
+        AND COL_LENGTH('dbo.Score', 'SuggestedLevelRef') IS NOT NULL
+            ALTER TABLE dbo.Score WITH CHECK ADD CONSTRAINT FK_Score_SuggestedLevel
+              FOREIGN KEY (SuggestedLevelRef) REFERENCES dbo.Level(Id)
+        """
+    )
 
 
 async def _read_teacher_photo(photo: UploadFile) -> tuple[bytes, str]:
@@ -282,6 +658,68 @@ async def _read_teacher_photo(photo: UploadFile) -> tuple[bytes, str]:
     if len(data) > TEACHER_PHOTO_MAX_BYTES:
         raise _bad_request("حجم تصویر نباید بیشتر از ۲ مگابایت باشد")
     return data, mime
+
+def _user_role_set(user: dict[str, Any]) -> set[str]:
+    return set(user.get("_roles") or get_user_roles(user))
+
+
+def _assert_can_create_enrollment(user: dict[str, Any], student_ref: int) -> None:
+    """ثبت‌نام: فقط منشی/آموزش/مدیر برای دیگران، یا زبان‌آموز برای خودش — مالی ممنوع"""
+    roles = _user_role_set(user)
+    # مالی حتی اگر StudentRef داشته باشد هم مجاز به ثبت‌نام نیست
+    if "finance" in roles and not ({"admin", "secretary", "education"} & roles):
+        raise HTTPException(
+            status_code=403,
+            detail="کارشناس مالی مجاز به ثبت‌نام نیست؛ فقط ثبت پرداخت مجاز است",
+        )
+    if "admin" in roles or "secretary" in roles or "education" in roles:
+        return
+    own = user.get("StudentRef")
+    if not own or int(own) != int(student_ref):
+        raise HTTPException(status_code=403, detail="فقط می‌توانید برای حساب خودتان ثبت‌نام کنید")
+
+
+# وضعیت‌هایی که هنوز ثبت‌نام «جاری» در دوره محسوب می‌شوند
+CONCURRENT_ENROLLMENT_STATUSES = (
+    "pending_payment",
+    "pending_approval",
+    "active",
+    "frozen",
+)
+
+
+def _assert_no_parallel_course_enrollment(
+    student_ref: int,
+    course_ref: int,
+    target_class_ref: int,
+) -> None:
+    """
+    یک زبان‌آموز نباید هم‌زمان در بیش از یک کلاسِ همان دوره ثبت‌نام باشد.
+    انصراف / انتقال / تکمیل‌شده مانع ثبت‌نام جدید در کلاس دیگر نیست.
+    """
+    placeholders = ",".join("?" for _ in CONCURRENT_ENROLLMENT_STATUSES)
+    existing = fetch_one(
+        f"""SELECT R.Id, R.ClassRef, R.Status,
+                   St.FirstName + N' ' + St.LastName AS StudentName,
+                   C.Name AS CourseName
+            FROM Registration R
+            JOIN Student St ON R.Studentref = St.Id
+            JOIN Course C ON R.CourseRef = C.Id
+            WHERE R.Studentref = ?
+              AND R.CourseRef = ?
+              AND R.ClassRef IS NOT NULL
+              AND R.ClassRef <> ?
+              AND R.Status IN ({placeholders})""",
+        (student_ref, course_ref, target_class_ref, *CONCURRENT_ENROLLMENT_STATUSES),
+    )
+    if existing:
+        name = existing.get("StudentName") or f"#{student_ref}"
+        course = existing.get("CourseName") or f"دوره #{course_ref}"
+        raise _bad_request(
+            f"{name} هم‌اکنون در کلاس #{existing['ClassRef']} از دوره «{course}» ثبت‌نام دارد؛ "
+            f"ثبت‌نام هم‌زمان در بیش از یک کلاس همان دوره مجاز نیست (ثبت‌نام #{existing['Id']})"
+        )
+
 
 AuthDep = Depends(get_current_user)
 
@@ -388,6 +826,61 @@ def _parse_jalali_to_date(value: Optional[str]) -> Optional[date]:
         return date(gy, gm, gd)
     except (ValueError, TypeError, OverflowError):
         return None
+
+
+def _years_old(birth: date, on: Optional[date] = None) -> int:
+    """سن کامل بر اساس تاریخ میلادی"""
+    on = on or date.today()
+    years = on.year - birth.year
+    if (on.month, on.day) < (birth.month, birth.day):
+        years -= 1
+    return max(0, years)
+
+
+def _assert_student_fits_course_age(student_ref: int, course_ref: int) -> None:
+    """ثبت‌نام فقط اگر سن زبان‌آموز در بازه رده سنی دوره باشد."""
+    student = fetch_one(
+        "SELECT Id, FirstName, LastName, BirthDate FROM Student WHERE Id = ?",
+        (student_ref,),
+    )
+    course = fetch_one(
+        "SELECT Id, Name, AgeGroup FROM Course WHERE Id = ?",
+        (course_ref,),
+    )
+    if not student or not course:
+        return
+
+    age_group = (course.get("AgeGroup") or "").strip()
+    rules = AGE_GROUP_RULES.get(age_group)
+    if not rules:
+        # برچسب قدیمی/آزاد در دیتابیس — محدودیت اعمال نمی‌شود
+        return
+
+    min_age, max_age = rules
+    if min_age is None and max_age is None:
+        return
+
+    birth = _parse_jalali_to_date(student.get("BirthDate"))
+    if not birth:
+        raise _bad_request(
+            "تاریخ تولد زبان‌آموز نامعتبر است؛ بدون تاریخ تولد معتبر نمی‌توان در این رده سنی ثبت‌نام کرد"
+        )
+
+    age = _years_old(birth)
+    name = f"{student.get('FirstName') or ''} {student.get('LastName') or ''}".strip() or f"#{student_ref}"
+    course_name = course.get("Name") or f"#{course_ref}"
+    band = age_group_range_label(age_group)
+
+    if min_age is not None and age < min_age:
+        raise _bad_request(
+            f"سن «{name}» ({age} سال) برای دوره «{course_name}» مناسب نیست. "
+            f"این دوره ویژهٔ {band} است."
+        )
+    if max_age is not None and age > max_age:
+        raise _bad_request(
+            f"سن «{name}» ({age} سال) برای دوره «{course_name}» مناسب نیست. "
+            f"این دوره ویژهٔ {band} است."
+        )
 
 
 def _pct(part: float, whole: float) -> float:
@@ -553,7 +1046,8 @@ def _compute_class_stats(class_id: int, class_row: dict[str, Any]) -> dict[str, 
 
 
 def _today_jalali() -> str:
-    t = date.today()
+    """تاریخ شمسی امروز به وقت ایران (نه لزوماً timezone سیستم سرور)"""
+    t = datetime.now(ZoneInfo("Asia/Tehran"))
     jy, jm, jd = _gregorian_to_jalali(t.year, t.month, t.day)
     return f"{jy}/{jm:02d}/{jd:02d}"
 
@@ -606,6 +1100,42 @@ async def health():
     if not db_ok:
         raise HTTPException(status_code=503, detail="Database unavailable")
     return {"status": "ok", "database": "connected"}
+
+
+@app.get("/time")
+async def server_time():
+    """ساعت و تاریخ سرور به وقت ایران — برای نمایش در هدر سایت"""
+    tehran = ZoneInfo("Asia/Tehran")
+    now_utc = datetime.now(timezone.utc)
+    now = now_utc.astimezone(tehran)
+    jy, jm, jd = _gregorian_to_jalali(now.year, now.month, now.day)
+    # یکشنبه=0 ... شنبه=6 (مثل JS getDay)
+    weekday_idx = (now.weekday() + 1) % 7
+    weekdays = ["یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه"]
+    months = [
+        "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+        "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند",
+    ]
+    weekday = weekdays[weekday_idx]
+    month_name = months[jm - 1]
+    return {
+        "unix_ms": int(now_utc.timestamp() * 1000),
+        "timezone": "Asia/Tehran",
+        "utc": now_utc.isoformat(),
+        "hour": now.hour,
+        "minute": now.minute,
+        "second": now.second,
+        "time": f"{now.hour:02d}:{now.minute:02d}",
+        "jalali": {
+            "year": jy,
+            "month": jm,
+            "day": jd,
+            "iso": f"{jy}/{jm:02d}/{jd:02d}",
+            "weekday": weekday,
+            "month_name": month_name,
+            "label": f"{weekday} {jd} {month_name} {jy}",
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +1284,17 @@ async def change_password(body: ChangePasswordRequest, user: dict = AuthDep):
     return {"message": "رمز عبور تغییر کرد؛ دوباره وارد شوید"}
 
 
+@app.put("/auth/theme")
+async def update_my_theme(body: ThemeUpdateRequest, user: dict = AuthDep):
+    execute(
+        "UPDATE AppUser SET UiTheme = ? WHERE Id = ?",
+        (body.ui_theme, user["Id"]),
+    )
+    fresh = get_user_by_id(user["Id"])
+    fresh["_roles"] = user.get("_roles") or get_user_roles(fresh)
+    return {"message": "تم ذخیره شد", "ui_theme": body.ui_theme, "user": public_user(fresh)}
+
+
 @app.get("/auth/roles")
 async def list_roles(user: dict = AdminDep):
     rows = fetch_all("SELECT Id, Code, Name, IsActive FROM Role WHERE IsActive = 1 ORDER BY Id")
@@ -800,15 +1341,95 @@ def _serialize_user_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_user_links(role_code: str, teacher_ref: Optional[int], student_ref: Optional[int]) -> None:
-    if role_code == "teacher" and not teacher_ref:
-        raise _bad_request("برای نقش مدرس باید پروفایل مدرس را انتخاب کنید")
-    if role_code == "student" and not student_ref:
-        raise _bad_request("برای نقش زبان‌آموز باید پروفایل زبان‌آموز را انتخاب کنید")
-    if teacher_ref and not fetch_one("SELECT Id FROM Teacher WHERE Id = ?", (teacher_ref,)):
-        raise _bad_request("مدرس نامعتبر است")
-    if student_ref and not fetch_one("SELECT Id FROM Student WHERE Id = ?", (student_ref,)):
-        raise _bad_request("زبان‌آموز نامعتبر است")
+def _validate_user_links(
+    role_code: str,
+    teacher_ref: Optional[int],
+    student_ref: Optional[int],
+    *,
+    exclude_user_id: Optional[int] = None,
+) -> None:
+    """اعتبارسنجی اتصال یکتای حساب به پروفایل مدرس/زبان‌آموز"""
+    if role_code == "teacher":
+        if not teacher_ref:
+            raise _bad_request("برای نقش مدرس باید پروفایل مدرس را انتخاب کنید")
+        if student_ref:
+            raise _bad_request("حساب مدرس نباید به پروفایل زبان‌آموز متصل باشد")
+    elif role_code == "student":
+        if not student_ref:
+            raise _bad_request("برای نقش زبان‌آموز باید پروفایل زبان‌آموز را انتخاب کنید")
+        if teacher_ref:
+            raise _bad_request("حساب زبان‌آموز نباید به پروفایل مدرس متصل باشد")
+    else:
+        if teacher_ref or student_ref:
+            raise _bad_request("فقط نقش مدرس/زبان‌آموز می‌تواند به پروفایل متصل شود")
+
+    if teacher_ref:
+        t = fetch_one("SELECT Id, IsActive FROM Teacher WHERE Id = ?", (teacher_ref,))
+        if not t:
+            raise _bad_request("مدرس نامعتبر است")
+        if not t.get("IsActive"):
+            raise _bad_request("این پروفایل مدرس غیرفعال است")
+        q = "SELECT Id, Username FROM AppUser WHERE TeacherRef = ?"
+        params: list[Any] = [teacher_ref]
+        if exclude_user_id is not None:
+            q += " AND Id <> ?"
+            params.append(exclude_user_id)
+        taken = fetch_one(q, tuple(params))
+        if taken:
+            raise _bad_request(
+                f"پروفایل این مدرس قبلاً به حساب «{taken['Username']}» متصل است"
+            )
+
+    if student_ref:
+        s = fetch_one("SELECT Id, IsActive FROM Student WHERE Id = ?", (student_ref,))
+        if not s:
+            raise _bad_request("زبان‌آموز نامعتبر است")
+        if not s.get("IsActive"):
+            raise _bad_request("این پروفایل زبان‌آموز غیرفعال است")
+        q = "SELECT Id, Username FROM AppUser WHERE StudentRef = ?"
+        params = [student_ref]
+        if exclude_user_id is not None:
+            q += " AND Id <> ?"
+            params.append(exclude_user_id)
+        taken = fetch_one(q, tuple(params))
+        if taken:
+            raise _bad_request(
+                f"پروفایل این زبان‌آموز قبلاً به حساب «{taken['Username']}» متصل است"
+            )
+
+
+@app.get("/users/link-options")
+async def user_link_options(user: dict = AdminDep):
+    """
+    فهرست پروفایل‌های مدرس/زبان‌آموز برای اتصال حساب.
+    LinkedUsername مشخص می‌کند پروفایل آزاد است یا به حساب دیگری وصل است.
+    """
+    teachers = fetch_all(
+        """
+        SELECT T.Id, T.FirstName, T.LastName, T.NationalCode, T.Mobile, T.IsActive,
+               U.Id AS LinkedUserId, U.Username AS LinkedUsername
+        FROM Teacher T
+        LEFT JOIN AppUser U ON U.TeacherRef = T.Id
+        WHERE T.IsActive = 1
+        ORDER BY T.LastName, T.FirstName
+        """
+    )
+    students = fetch_all(
+        """
+        SELECT S.Id, S.FirstName, S.LastName, S.NationalCode, S.Mobile, S.IsActive,
+               U.Id AS LinkedUserId, U.Username AS LinkedUsername
+        FROM Student S
+        LEFT JOIN AppUser U ON U.StudentRef = S.Id
+        WHERE S.IsActive = 1
+        ORDER BY S.LastName, S.FirstName
+        """
+    )
+    return {
+        "teachers": teachers,
+        "students": students,
+        "teachers_count": len(teachers),
+        "students_count": len(students),
+    }
 
 
 @app.get("/users")
@@ -846,7 +1467,9 @@ async def create_user(body: StaffUserCreate, user: dict = AdminDep):
     role = fetch_one("SELECT Id, Code FROM Role WHERE Code = ? AND IsActive = 1", (body.role_code,))
     if not role:
         raise _bad_request("نقش نامعتبر است")
-    _validate_user_links(body.role_code, body.teacher_ref, body.student_ref)
+    teacher_ref = body.teacher_ref if body.role_code == "teacher" else None
+    student_ref = body.student_ref if body.role_code == "student" else None
+    _validate_user_links(body.role_code, teacher_ref, student_ref)
 
     new_id = execute_returning_id(
         """INSERT INTO AppUser
@@ -859,8 +1482,8 @@ async def create_user(body: StaffUserCreate, user: dict = AdminDep):
             hash_password(body.password),
             body.full_name.strip(),
             role["Id"],
-            body.student_ref,
-            body.teacher_ref,
+            student_ref,
+            teacher_ref,
             1 if body.is_active else 0,
         ),
     )
@@ -878,12 +1501,12 @@ async def update_user(user_id: int, body: StaffUserUpdate, user: dict = AdminDep
     role_code = data.get("role_code", existing["RoleCode"])
     teacher_ref = data["teacher_ref"] if "teacher_ref" in data else existing["TeacherRef"]
     student_ref = data["student_ref"] if "student_ref" in data else existing["StudentRef"]
-    if "role_code" in data and role_code != "teacher" and "teacher_ref" not in data:
+    if role_code != "teacher":
         teacher_ref = None
-    if "role_code" in data and role_code != "student" and "student_ref" not in data:
+    if role_code != "student":
         student_ref = None
 
-    _validate_user_links(role_code, teacher_ref, student_ref)
+    _validate_user_links(role_code, teacher_ref, student_ref, exclude_user_id=user_id)
 
     if "email" in data and data["email"]:
         dup = fetch_one("SELECT Id FROM AppUser WHERE Email = ? AND Id <> ?", (data["email"], user_id))
@@ -944,6 +1567,29 @@ async def update_user(user_id: int, body: StaffUserUpdate, user: dict = AdminDep
 
     row = fetch_one(USER_SELECT + " WHERE U.Id = ?", (user_id,))
     return {"message": "کاربر به‌روزرسانی شد", "user": _serialize_user_row(row)}
+
+
+@app.post("/users/{user_id}/reset-password")
+async def admin_reset_password(
+    user_id: int, body: AdminResetPasswordRequest, user: dict = AdminDep
+):
+    """ریست رمز توسط مدیر — جلسات قبلی باطل و قفل ورود پاک می‌شود."""
+    existing = fetch_one(USER_SELECT + " WHERE U.Id = ?", (user_id,))
+    if not existing:
+        raise _not_found("User")
+
+    execute(
+        """UPDATE AppUser
+           SET PasswordHash = ?, FailedLoginCount = 0, LockedUntil = NULL
+           WHERE Id = ?""",
+        (hash_password(body.new_password), user_id),
+    )
+    revoke_all_user_sessions(user_id)
+    return {
+        "message": "رمز عبور با موفقیت بازنشانی شد",
+        "username": existing["Username"],
+        "full_name": existing.get("FullName"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1158,6 +1804,12 @@ async def list_branches(search: Optional[str] = None):
         params.extend([like, like, like])
     query += " ORDER BY Name"
     return _ok_list("branches", fetch_all(query, tuple(params)))
+
+
+@app.get("/age-groups")
+async def list_age_groups():
+    """فهرست رده‌های سنی دوره با بازه مجاز سن"""
+    return {"age_groups": age_group_catalog(), "count": len(AGE_GROUP_RULES)}
 
 
 @app.post("/branches", status_code=201)
@@ -1536,7 +2188,7 @@ async def archive_teacher(teacher_id: int, user: dict = StaffDep):
 # ---------------------------------------------------------------------------
 
 @app.get("/students")
-async def list_students(search: Optional[str] = None, include_inactive: bool = False, user: dict = StaffDep):
+async def list_students(search: Optional[str] = None, include_inactive: bool = False, user: dict = StudentsReadDep):
     query = """
         SELECT S.Id, S.FirstName, S.LastName, S.FatherName, S.NationalCode, S.Gender,
                S.BirthDate, S.Mobile, S.Email, S.TargetLanguageRef, S.CurrentLevelRef,
@@ -1659,6 +2311,114 @@ async def archive_student(student_id: int, user: dict = StaffDep):
         raise _not_found("Student")
     execute("UPDATE Student SET IsActive = 0 WHERE Id = ?", (student_id,))
     return {"message": "Student archived (soft delete)", "id": student_id}
+
+
+def _hard_delete_students(ids: list[int]) -> dict[str, Any]:
+    """حذف فیزیکی زبان‌آموز و وابستگی‌ها در یک تراکنش"""
+    if not ids:
+        return {"deleted": 0, "ids": []}
+    placeholders = ",".join("?" for _ in ids)
+    params = tuple(ids)
+    with db_cursor() as cursor:
+        cursor.execute(
+            f"SELECT Id FROM Student WHERE Id IN ({placeholders})",
+            params,
+        )
+        existing = [int(r[0]) for r in cursor.fetchall()]
+        if not existing:
+            return {"deleted": 0, "ids": []}
+
+        ex_ph = ",".join("?" for _ in existing)
+        ex_params = tuple(existing)
+
+        cursor.execute(
+            f"SELECT Id FROM Registration WHERE Studentref IN ({ex_ph})",
+            ex_params,
+        )
+        reg_ids = [int(r[0]) for r in cursor.fetchall()]
+
+        # حضور و غیاب
+        cursor.execute(
+            f"DELETE FROM SessionStudent WHERE StudentRef IN ({ex_ph})",
+            ex_params,
+        )
+
+        # نمرات متصل به زبان‌آموز یا ثبت‌نام‌هایش
+        if reg_ids:
+            reg_ph = ",".join("?" for _ in reg_ids)
+            cursor.execute(
+                f"""DELETE FROM Score
+                    WHERE StudentRef IN ({ex_ph})
+                       OR RegistrationRef IN ({reg_ph})""",
+                ex_params + tuple(reg_ids),
+            )
+            # نمرات فقط با RegistrationRef (بدون StudentRef)
+            cursor.execute(
+                f"DELETE FROM Score WHERE RegistrationRef IN ({reg_ph})",
+                tuple(reg_ids),
+            )
+        else:
+            cursor.execute(
+                f"DELETE FROM Score WHERE StudentRef IN ({ex_ph})",
+                ex_params,
+            )
+
+        # پرداخت‌ها (زبان‌آموز یا ثبت‌نام مرتبط)
+        if reg_ids:
+            reg_ph = ",".join("?" for _ in reg_ids)
+            cursor.execute(
+                f"""DELETE FROM Payment
+                    WHERE StudentRef IN ({ex_ph})
+                       OR RegistrationRef IN ({reg_ph})""",
+                ex_params + tuple(reg_ids),
+            )
+        else:
+            cursor.execute(
+                f"DELETE FROM Payment WHERE StudentRef IN ({ex_ph})",
+                ex_params,
+            )
+
+        # ثبت‌نام‌ها
+        if reg_ids:
+            cursor.execute(
+                f"DELETE FROM Score WHERE RegistrationRef IN ({','.join('?' for _ in reg_ids)})",
+                tuple(reg_ids),
+            )
+            cursor.execute(
+                f"DELETE FROM Registration WHERE Id IN ({','.join('?' for _ in reg_ids)})",
+                tuple(reg_ids),
+            )
+
+        # قطع ارتباط حساب کاربری
+        cursor.execute(
+            f"UPDATE AppUser SET StudentRef = NULL WHERE StudentRef IN ({ex_ph})",
+            ex_params,
+        )
+
+        cursor.execute(
+            f"DELETE FROM Student WHERE Id IN ({ex_ph})",
+            ex_params,
+        )
+        deleted = cursor.rowcount
+    return {"deleted": deleted if deleted >= 0 else len(existing), "ids": existing}
+
+
+@app.post("/students/bulk-delete")
+async def bulk_delete_students(body: StudentBulkDelete, user: dict = StaffDep):
+    """حذف گروهی و قطعی زبان‌آموزان از پایگاه داده"""
+    try:
+        result = _hard_delete_students(body.ids)
+    except pyodbc.IntegrityError as exc:
+        raise _bad_request(
+            "حذف ممکن نیست؛ برخی وابستگی‌ها مانع حذف شده‌اند. ابتدا داده‌های مرتبط را بررسی کنید."
+        ) from exc
+    if not result["deleted"]:
+        raise _not_found("Student")
+    return {
+        "message": f"{result['deleted']} زبان‌آموز از پایگاه داده حذف شد",
+        "deleted": result["deleted"],
+        "ids": result["ids"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1859,6 +2619,7 @@ SESSION_SELECT = """
 @app.get("/sessions")
 async def list_sessions(
     class_ref: Optional[int] = None,
+    teacher_ref: Optional[int] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
     from_date: Optional[str] = Query(None, pattern=r"^\d{4}/\d{2}/\d{2}$"),
@@ -1869,6 +2630,9 @@ async def list_sessions(
     if class_ref is not None:
         query += " AND S.ClassRef = ?"
         params.append(class_ref)
+    if teacher_ref is not None:
+        query += " AND Cl.TeacherRef = ?"
+        params.append(teacher_ref)
     if status:
         query += " AND S.Status = ?"
         params.append(status)
@@ -2135,30 +2899,64 @@ ENROLLMENT_SELECT = """
     SELECT
         R.Id, R.Studentref AS StudentRef, R.CourseRef, R.ClassRef, R.Date,
         R.Status, R.WithdrawReason, R.FinancialStatus, R.CreatedAt,
-        St.FirstName + N' ' + St.LastName AS StudentName,
+        Stud.FirstName + N' ' + Stud.LastName AS StudentName,
         C.Name AS CourseName,
         C.Cost AS CourseCost,
+        C.SessionsCount AS CourseSessionsCount,
+        C.TeachingMethod,
+        C.LanguageRef,
+        Lang.Name AS LanguageName,
+        C.LevelRef,
+        Lv.Name AS LevelName,
+        Lv.Code AS LevelCode,
         Cl.Capacity AS ClassCapacity,
+        Cl.Status AS ClassStatus,
+        Cl.StartDate AS ClassStartDate,
+        Cl.EndDate AS ClassEndDate,
+        Cl.TeacherRef,
+        Tch.FirstName + N' ' + Tch.LastName AS TeacherName,
+        Cl.SessionTypeRef,
+        SType.Name AS SessionTypeName,
+        Cl.BranchRef,
+        Br.Name AS BranchName,
         ISNULL((
-            SELECT SUM(P.Amount) FROM Payment P
-            WHERE P.RegistrationRef = R.Id AND P.Status = N'paid'
+            SELECT SUM(Pay.Amount) FROM Payment Pay
+            WHERE Pay.RegistrationRef = R.Id AND Pay.Status = N'paid'
         ), 0) AS PaidAmount
     FROM Registration R
-    JOIN Student St ON R.Studentref = St.Id
+    JOIN Student Stud ON R.Studentref = Stud.Id
     JOIN Course C ON R.CourseRef = C.Id
+    JOIN Language Lang ON C.LanguageRef = Lang.Id
+    LEFT JOIN Level Lv ON C.LevelRef = Lv.Id
     LEFT JOIN Class Cl ON R.ClassRef = Cl.Id
+    LEFT JOIN Teacher Tch ON Cl.TeacherRef = Tch.Id
+    LEFT JOIN SessionType SType ON Cl.SessionTypeRef = SType.Id
+    LEFT JOIN Branch Br ON Cl.BranchRef = Br.Id
 """
 
 
-@app.get("/enrollments")
-async def list_enrollments(
+def _enrollment_list_roles(user: dict[str, Any]) -> set[str]:
+    return _user_role_set(user)
+
+
+def _can_list_all_enrollments(user: dict[str, Any]) -> bool:
+    return bool(
+        _enrollment_list_roles(user)
+        & {"admin", "secretary", "education", "finance", "teacher"}
+    )
+
+
+def _list_enrollments_rows(
+    *,
     student_ref: Optional[int] = None,
     class_ref: Optional[int] = None,
     course_ref: Optional[int] = None,
     status: Optional[str] = None,
+    financial_status: Optional[str] = None,
+    balance_filter: Optional[str] = None,
     search: Optional[str] = None,
-    user: dict = AuthDep,
-):
+    include_withdrawn: bool = False,
+) -> list[dict[str, Any]]:
     query = ENROLLMENT_SELECT + " WHERE 1=1"
     params: list[Any] = []
     if student_ref is not None:
@@ -2173,17 +2971,379 @@ async def list_enrollments(
     if status:
         query += " AND R.Status = ?"
         params.append(status)
+    elif not include_withdrawn:
+        # حذف منطقی = withdrawn؛ از لیست پیش‌فرض پنهان می‌شود تا مثل حذف واقعی دیده شود
+        query += " AND R.Status <> N'withdrawn'"
+    if financial_status:
+        fs = financial_status.strip().lower()
+        if fs == "partial":
+            fs = "debtor"
+        if fs in ("debtor", "creditor", "settled"):
+            query += " AND R.FinancialStatus = ?"
+            params.append(fs)
     if search:
         query += """ AND (
-            St.FirstName + N' ' + St.LastName LIKE ?
+            Stud.FirstName + N' ' + Stud.LastName LIKE ?
             OR C.Name LIKE ?
             OR CAST(R.Id AS NVARCHAR(20)) LIKE ?
+            OR CAST(R.ClassRef AS NVARCHAR(20)) LIKE ?
         )"""
         like = f"%{search}%"
-        params.extend([like, like, like])
+        params.extend([like, like, like, like])
     query += " ORDER BY R.Id DESC"
-    rows = fetch_all(query, tuple(params))
-    return _ok_list("enrollments", [enrich_enrollment_finance(r) for r in rows])
+    raw = fetch_all(query, tuple(params))
+    rows = apply_unallocated_payments(raw)
+
+    bf = (balance_filter or "").strip().lower()
+    if bf in ("debtor", "creditor", "settled", "nonzero"):
+        filtered: list[dict[str, Any]] = []
+        for r in rows:
+            bal = float(r.get("Balance") or 0)
+            derived = r.get("DerivedFinancialStatus") or (
+                "debtor" if bal < 0 else "creditor" if bal > 0 else "settled"
+            )
+            if bf == "nonzero" and bal != 0:
+                filtered.append(r)
+            elif bf == derived:
+                filtered.append(r)
+        rows = filtered
+    return rows
+
+
+@app.get("/me/enrollments")
+async def my_enrollments(
+    status: Optional[str] = None,
+    balance_filter: Optional[str] = None,
+    user: dict = AuthDep,
+):
+    """دوره‌ها / ثبت‌نام‌های زبان‌آموز جاری"""
+    student_ref = user.get("StudentRef")
+    if not student_ref:
+        raise HTTPException(
+            status_code=403,
+            detail="حساب شما به پروفایل زبان‌آموز متصل نیست",
+        )
+    rows = _list_enrollments_rows(
+        student_ref=int(student_ref),
+        status=status,
+        balance_filter=balance_filter,
+    )
+    return _ok_list("enrollments", rows)
+
+
+def _require_teacher_ref(user: dict[str, Any]) -> int:
+    tid = user.get("TeacherRef")
+    if not tid:
+        raise HTTPException(
+            status_code=403,
+            detail="حساب شما به پروفایل مدرس متصل نیست",
+        )
+    return int(tid)
+
+
+@app.get("/me/teaching/summary")
+async def my_teaching_summary(user: dict = AuthDep):
+    """خلاصه داشبورد مدرس: کلاس‌ها، دوره‌ها، زبان‌آموزان، جلسات"""
+    teacher_ref = _require_teacher_ref(user)
+
+    classes = fetch_all(CLASS_SELECT + " WHERE Cl.TeacherRef = ? ORDER BY Cl.Id DESC", (teacher_ref,))
+    class_ids = [int(c["Id"]) for c in classes]
+    active_classes = [
+        c for c in classes if (c.get("Status") or "") in ("open", "in_progress", "full")
+    ]
+
+    courses_map: dict[int, dict[str, Any]] = {}
+    for c in classes:
+        cid = int(c["CourseRef"])
+        if cid not in courses_map:
+            courses_map[cid] = {
+                "Id": cid,
+                "Name": c.get("CourseName"),
+                "ClassCount": 0,
+                "Statuses": set(),
+            }
+        courses_map[cid]["ClassCount"] += 1
+        courses_map[cid]["Statuses"].add(c.get("Status"))
+
+    courses = []
+    for c in courses_map.values():
+        courses.append(
+            {
+                "Id": c["Id"],
+                "Name": c["Name"],
+                "ClassCount": c["ClassCount"],
+                "Statuses": sorted(s for s in c["Statuses"] if s),
+            }
+        )
+
+    students: list[dict[str, Any]] = []
+    if class_ids:
+        ph = ",".join("?" for _ in class_ids)
+        students = fetch_all(
+            f"""
+            SELECT DISTINCT
+                St.Id, St.FirstName, St.LastName, St.Mobile, St.NationalCode,
+                R.ClassRef, Cl.CourseRef, C.Name AS CourseName,
+                R.Status AS EnrollmentStatus
+            FROM Registration R
+            JOIN Student St ON R.Studentref = St.Id
+            JOIN Class Cl ON R.ClassRef = Cl.Id
+            JOIN Course C ON Cl.CourseRef = C.Id
+            WHERE Cl.TeacherRef = ?
+              AND R.ClassRef IN ({ph})
+              AND R.Status IN (N'active', N'pending_payment', N'pending_approval', N'frozen')
+            ORDER BY St.LastName, St.FirstName
+            """,
+            (teacher_ref, *class_ids),
+        )
+
+    # یکتا بر اساس دانشجو (اولین کلاس)
+    uniq_students: dict[int, dict[str, Any]] = {}
+    for s in students:
+        sid = int(s["Id"])
+        if sid not in uniq_students:
+            uniq_students[sid] = s
+
+    upcoming_sessions: list[dict[str, Any]] = []
+    recent_sessions: list[dict[str, Any]] = []
+    attendance_marked = 0
+    if class_ids:
+        ph = ",".join("?" for _ in class_ids)
+        upcoming_sessions = fetch_all(
+            f"""
+            SELECT TOP 8
+                S.Id, S.ClassRef, S.Date, S.StartTime, S.EndTime, S.Status,
+                C.Name AS CourseName,
+                ST.Name AS SessionTypeName
+            FROM Session S
+            JOIN Class Cl ON S.ClassRef = Cl.Id
+            JOIN Course C ON Cl.CourseRef = C.Id
+            LEFT JOIN SessionType ST ON S.SessionTypeRef = ST.Id
+            WHERE Cl.TeacherRef = ?
+              AND S.ClassRef IN ({ph})
+              AND S.Status IN (N'scheduled', N'in_progress')
+            ORDER BY S.Date, S.StartTime
+            """,
+            (teacher_ref, *class_ids),
+        )
+        recent_sessions = fetch_all(
+            f"""
+            SELECT TOP 8
+                S.Id, S.ClassRef, S.Date, S.StartTime, S.EndTime, S.Status,
+                C.Name AS CourseName,
+                (
+                    SELECT COUNT(*) FROM SessionStudent SS
+                    WHERE SS.SessionRef = S.Id
+                ) AS AttendanceCount
+            FROM Session S
+            JOIN Class Cl ON S.ClassRef = Cl.Id
+            JOIN Course C ON Cl.CourseRef = C.Id
+            WHERE Cl.TeacherRef = ?
+              AND S.ClassRef IN ({ph})
+            ORDER BY S.Date DESC, S.Id DESC
+            """,
+            (teacher_ref, *class_ids),
+        )
+        row = fetch_one(
+            f"""
+            SELECT COUNT(DISTINCT SS.SessionRef) AS Cnt
+            FROM SessionStudent SS
+            JOIN Session S ON SS.SessionRef = S.Id
+            JOIN Class Cl ON S.ClassRef = Cl.Id
+            WHERE Cl.TeacherRef = ?
+              AND S.ClassRef IN ({ph})
+            """,
+            (teacher_ref, *class_ids),
+        )
+        attendance_marked = int((row or {}).get("Cnt") or 0)
+
+    teacher = fetch_one(
+        "SELECT Id, FirstName, LastName, Specialty FROM Teacher WHERE Id = ?",
+        (teacher_ref,),
+    )
+
+    return {
+        "teacher": teacher,
+        "stats": {
+            "classes_total": len(classes),
+            "classes_active": len(active_classes),
+            "courses_total": len(courses),
+            "students_total": len(uniq_students),
+            "sessions_upcoming": len(upcoming_sessions),
+            "attendance_sessions": attendance_marked,
+        },
+        "classes": classes[:12],
+        "courses": courses,
+        "students": list(uniq_students.values())[:12],
+        "upcoming_sessions": upcoming_sessions,
+        "recent_sessions": recent_sessions,
+    }
+
+
+@app.get("/me/teaching/classes")
+async def my_teaching_classes(status: Optional[str] = None, user: dict = AuthDep):
+    teacher_ref = _require_teacher_ref(user)
+    query = CLASS_SELECT + " WHERE Cl.TeacherRef = ?"
+    params: list[Any] = [teacher_ref]
+    if status:
+        query += " AND Cl.Status = ?"
+        params.append(status)
+    query += " ORDER BY Cl.Id DESC"
+    return _ok_list("classes", fetch_all(query, tuple(params)))
+
+
+@app.get("/me/teaching/courses")
+async def my_teaching_courses(user: dict = AuthDep):
+    teacher_ref = _require_teacher_ref(user)
+    rows = fetch_all(
+        """
+        SELECT
+            C.Id, C.Name, C.Cost, C.SessionsCount, C.TeachingMethod,
+            C.LanguageRef, Lang.Name AS LanguageName,
+            C.LevelRef, Lv.Name AS LevelName, Lv.Code AS LevelCode,
+            COUNT(DISTINCT Cl.Id) AS ClassCount,
+            SUM(CASE WHEN Cl.Status IN (N'open', N'in_progress', N'full') THEN 1 ELSE 0 END) AS ActiveClassCount,
+            (
+                SELECT COUNT(DISTINCT R.Studentref)
+                FROM Registration R
+                JOIN Class Cl2 ON R.ClassRef = Cl2.Id
+                WHERE Cl2.CourseRef = C.Id
+                  AND Cl2.TeacherRef = ?
+                  AND R.Status IN (N'active', N'pending_payment', N'pending_approval', N'frozen')
+            ) AS StudentCount
+        FROM Class Cl
+        JOIN Course C ON Cl.CourseRef = C.Id
+        JOIN Language Lang ON C.LanguageRef = Lang.Id
+        LEFT JOIN Level Lv ON C.LevelRef = Lv.Id
+        WHERE Cl.TeacherRef = ?
+        GROUP BY C.Id, C.Name, C.Cost, C.SessionsCount, C.TeachingMethod,
+                 C.LanguageRef, Lang.Name, C.LevelRef, Lv.Name, Lv.Code
+        ORDER BY C.Name
+        """,
+        (teacher_ref, teacher_ref),
+    )
+    return _ok_list("courses", rows)
+
+
+@app.get("/me/teaching/students")
+async def my_teaching_students(
+    class_ref: Optional[int] = None,
+    search: Optional[str] = None,
+    user: dict = AuthDep,
+):
+    teacher_ref = _require_teacher_ref(user)
+    query = """
+        SELECT
+            St.Id, St.FirstName, St.LastName, St.Mobile, St.NationalCode, St.Gender,
+            R.Id AS EnrollmentId, R.Status AS EnrollmentStatus, R.ClassRef, R.CourseRef,
+            C.Name AS CourseName,
+            Cl.Status AS ClassStatus,
+            Lang.Name AS LanguageName,
+            Lv.Name AS LevelName
+        FROM Registration R
+        JOIN Student St ON R.Studentref = St.Id
+        JOIN Class Cl ON R.ClassRef = Cl.Id
+        JOIN Course C ON R.CourseRef = C.Id
+        JOIN Language Lang ON C.LanguageRef = Lang.Id
+        LEFT JOIN Level Lv ON C.LevelRef = Lv.Id
+        WHERE Cl.TeacherRef = ?
+          AND R.Status IN (N'active', N'pending_payment', N'pending_approval', N'frozen')
+    """
+    params: list[Any] = [teacher_ref]
+    if class_ref is not None:
+        # اطمینان از مالکیت کلاس
+        owned = fetch_one(
+            "SELECT Id FROM Class WHERE Id = ? AND TeacherRef = ?",
+            (class_ref, teacher_ref),
+        )
+        if not owned:
+            raise HTTPException(status_code=403, detail="دسترسی به این کلاس ندارید")
+        query += " AND R.ClassRef = ?"
+        params.append(class_ref)
+    if search:
+        like = f"%{search.strip()}%"
+        query += """ AND (
+            St.FirstName + N' ' + St.LastName LIKE ?
+            OR St.Mobile LIKE ?
+            OR St.NationalCode LIKE ?
+            OR C.Name LIKE ?
+        )"""
+        params.extend([like, like, like, like])
+    query += " ORDER BY St.LastName, St.FirstName, R.Id DESC"
+    return _ok_list("students", fetch_all(query, tuple(params)))
+
+
+@app.get("/me/teaching/sessions")
+async def my_teaching_sessions(
+    status: Optional[str] = None,
+    class_ref: Optional[int] = None,
+    from_date: Optional[str] = Query(None, pattern=r"^\d{4}/\d{2}/\d{2}$"),
+    to_date: Optional[str] = Query(None, pattern=r"^\d{4}/\d{2}/\d{2}$"),
+    user: dict = AuthDep,
+):
+    teacher_ref = _require_teacher_ref(user)
+    query = SESSION_SELECT + " WHERE Cl.TeacherRef = ?"
+    params: list[Any] = [teacher_ref]
+    if class_ref is not None:
+        owned = fetch_one(
+            "SELECT Id FROM Class WHERE Id = ? AND TeacherRef = ?",
+            (class_ref, teacher_ref),
+        )
+        if not owned:
+            raise HTTPException(status_code=403, detail="دسترسی به این کلاس ندارید")
+        query += " AND S.ClassRef = ?"
+        params.append(class_ref)
+    if status:
+        query += " AND S.Status = ?"
+        params.append(status)
+    if from_date:
+        query += " AND S.Date >= ?"
+        params.append(from_date)
+    if to_date:
+        query += " AND S.Date <= ?"
+        params.append(to_date)
+    query += " ORDER BY S.Date DESC, S.StartTime DESC"
+    return _ok_list("sessions", fetch_all(query, tuple(params)))
+
+
+@app.get("/enrollments")
+async def list_enrollments(
+    student_ref: Optional[int] = None,
+    class_ref: Optional[int] = None,
+    course_ref: Optional[int] = None,
+    status: Optional[str] = None,
+    financial_status: Optional[str] = None,
+    balance_filter: Optional[str] = None,
+    search: Optional[str] = None,
+    include_withdrawn: bool = False,
+    user: dict = AuthDep,
+):
+    """
+    financial_status: وضعیت ذخیره‌شده در DB (debtor|creditor|settled)
+    balance_filter: مانده واقعی حساب بر اساس پرداخت − شهریه
+      debtor | creditor | settled | nonzero
+    include_withdrawn: برای صفحات مالی که به ثبت‌نام‌های انصرافی هم نیاز دارند
+    """
+    if not _can_list_all_enrollments(user):
+        own = user.get("StudentRef")
+        if not own:
+            raise HTTPException(
+                status_code=403,
+                detail="دسترسی به فهرست ثبت‌نام‌ها ندارید",
+            )
+        student_ref = int(own)
+
+    rows = _list_enrollments_rows(
+        student_ref=student_ref,
+        class_ref=class_ref,
+        course_ref=course_ref,
+        status=status,
+        financial_status=financial_status,
+        balance_filter=balance_filter,
+        search=search,
+        include_withdrawn=include_withdrawn,
+    )
+    return _ok_list("enrollments", rows)
 
 
 @app.get("/enrollments/{enrollment_id}")
@@ -2191,11 +3351,25 @@ async def get_enrollment(enrollment_id: int, user: dict = AuthDep):
     row = fetch_one(ENROLLMENT_SELECT + " WHERE R.Id = ?", (enrollment_id,))
     if not row:
         raise _not_found("Enrollment")
+    if not _can_list_all_enrollments(user):
+        own = user.get("StudentRef")
+        if not own or int(row["StudentRef"]) != int(own):
+            raise HTTPException(status_code=403, detail="دسترسی به این ثبت‌نام ندارید")
+    # برای تخصیص صحیح پرداخت‌های بدون ثبت‌نام، همهٔ ثبت‌نام‌های همان زبان‌آموز لازم است
+    siblings = fetch_all(
+        ENROLLMENT_SELECT + " WHERE R.Studentref = ? ORDER BY R.Id",
+        (row["StudentRef"],),
+    )
+    enriched = apply_unallocated_payments(siblings)
+    for item in enriched:
+        if int(item["Id"]) == int(enrollment_id):
+            return {"enrollment": item}
     return {"enrollment": enrich_enrollment_finance(row)}
 
 
 @app.post("/enrollments", status_code=201)
 async def create_enrollment(body: EnrollmentCreate, user: dict = AuthDep):
+    _assert_can_create_enrollment(user, body.student_ref)
     if not fetch_one("SELECT Id FROM Student WHERE Id = ? AND IsActive = 1", (body.student_ref,)):
         raise _bad_request("دانشجو معتبر نیست")
 
@@ -2211,6 +3385,14 @@ async def create_enrollment(body: EnrollmentCreate, user: dict = AuthDep):
         raise _bad_request("ثبت‌نام در این وضعیت کلاس مجاز نیست")
 
     course_ref = body.course_ref or class_row["CourseRef"]
+    # وضعیت مالی از روی مانده محاسبه می‌شود؛ ثبت اولیه همیشه بدهکار (تا پرداخت ثبت شود)
+    initial_finance = compute_finance_metrics(
+        fetch_one("SELECT Cost FROM Course WHERE Id = ?", (course_ref,))["Cost"]
+        if course_ref
+        else 0,
+        0,
+    )["DerivedFinancialStatus"]
+
     enrolled = fetch_one(
         """SELECT COUNT(*) AS Cnt FROM Registration
            WHERE ClassRef = ? AND Status IN ('active', 'pending_payment', 'pending_approval')""",
@@ -2230,6 +3412,9 @@ async def create_enrollment(body: EnrollmentCreate, user: dict = AuthDep):
     if duplicate:
         raise _bad_request("این دانشجو قبلاً در این کلاس ثبت‌نام شده است")
 
+    _assert_no_parallel_course_enrollment(body.student_ref, int(course_ref), body.class_ref)
+    _assert_student_fits_course_age(body.student_ref, int(course_ref))
+
     new_id = execute_returning_id(
         """INSERT INTO Registration
             ([Studentref], [CourseRef], [ClassRef], [Date], [Status], [FinancialStatus])
@@ -2240,7 +3425,7 @@ async def create_enrollment(body: EnrollmentCreate, user: dict = AuthDep):
             body.class_ref,
             body.date,
             body.status,
-            body.financial_status,
+            initial_finance,
         ),
     )
 
@@ -2252,8 +3437,10 @@ async def create_enrollment(body: EnrollmentCreate, user: dict = AuthDep):
 
 
 @app.post("/enrollments/bulk", status_code=201)
-async def create_enrollments_bulk(body: EnrollmentBulkCreate, user: dict = AuthDep):
+async def create_enrollments_bulk(body: EnrollmentBulkCreate, user: dict = StaffDep):
     """ثبت هم‌زمان چند زبان‌آموز در یک کلاس با فیلدهای مشترک"""
+    for sid in body.student_refs:
+        _assert_can_create_enrollment(user, sid)
     student_refs = body.student_refs
     class_row = fetch_one(
         "SELECT Id, CourseRef, Capacity, Status FROM Class WHERE Id = ?",
@@ -2268,6 +3455,11 @@ async def create_enrollments_bulk(body: EnrollmentBulkCreate, user: dict = AuthD
 
     course_ref = body.course_ref or class_row["CourseRef"]
     capacity = int(class_row["Capacity"])
+    course_row = fetch_one("SELECT Cost FROM Course WHERE Id = ?", (course_ref,))
+    initial_finance = compute_finance_metrics(
+        course_row["Cost"] if course_row else 0,
+        0,
+    )["DerivedFinancialStatus"]
 
     placeholders = ",".join("?" for _ in student_refs)
     active_students = fetch_all(
@@ -2300,6 +3492,32 @@ async def create_enrollments_bulk(body: EnrollmentBulkCreate, user: dict = AuthD
         dup_ids = ", ".join(str(r["StudentRef"]) for r in duplicates)
         raise _bad_request(f"این زبان‌آموزان قبلاً در این کلاس ثبت‌نام شده‌اند: {dup_ids}")
 
+    parallel = fetch_all(
+        f"""SELECT R.Studentref AS StudentRef,
+                   R.ClassRef,
+                   R.Id AS EnrollmentId,
+                   St.FirstName + N' ' + St.LastName AS StudentName
+            FROM Registration R
+            JOIN Student St ON R.Studentref = St.Id
+            WHERE R.CourseRef = ?
+              AND R.Studentref IN ({placeholders})
+              AND R.ClassRef IS NOT NULL
+              AND R.ClassRef <> ?
+              AND R.Status IN ({",".join("?" for _ in CONCURRENT_ENROLLMENT_STATUSES)})""",
+        (course_ref, *student_refs, body.class_ref, *CONCURRENT_ENROLLMENT_STATUSES),
+    )
+    if parallel:
+        details = ", ".join(
+            f"{r['StudentName']} (کلاس #{r['ClassRef']}, ثبت‌نام #{r['EnrollmentId']})"
+            for r in parallel
+        )
+        raise _bad_request(
+            f"این زبان‌آموزان هم‌اکنون در کلاس دیگری از همین دوره ثبت‌نام دارند: {details}"
+        )
+
+    for sid in student_refs:
+        _assert_student_fits_course_age(sid, int(course_ref))
+
     new_ids: list[int] = []
     with db_cursor() as cursor:
         for sid in student_refs:
@@ -2314,7 +3532,7 @@ async def create_enrollments_bulk(body: EnrollmentBulkCreate, user: dict = AuthD
                     body.class_ref,
                     body.date,
                     body.status,
-                    body.financial_status,
+                    initial_finance,
                 ),
             )
             while cursor.description is None:
@@ -2347,10 +3565,11 @@ async def update_enrollment(enrollment_id: int, body: EnrollmentUpdate, user: di
     fields: list[str] = []
     params: list[Any] = []
     data = body.model_dump(exclude_unset=True)
+    # وضعیت مالی دستی پذیرفته نمی‌شود؛ بعد از ذخیره از روی پرداخت‌ها همگام می‌شود
+    data.pop("financial_status", None)
     column_map = {
         "status": "Status",
         "withdraw_reason": "WithdrawReason",
-        "financial_status": "FinancialStatus",
     }
     for key, col in column_map.items():
         if key in data:
@@ -2368,6 +3587,7 @@ async def update_enrollment(enrollment_id: int, body: EnrollmentUpdate, user: di
                WHERE Id = ? AND Status = N'full'""",
             (current["ClassRef"],),
         )
+    sync_registration_financial_status(enrollment_id)
     return {"message": "Enrollment updated", "id": enrollment_id}
 
 
@@ -2425,19 +3645,43 @@ async def list_payments(
     return _ok_list("payments", fetch_all(query, tuple(params)))
 
 
+def _payment_method_to_type(method: str) -> int:
+    return {"cash": 1, "card": 2, "online": 3, "installment": 4, "other": 5}.get(method, 5)
+
+
+def _validate_payment_registration(student_ref: int, registration_ref: int) -> dict[str, Any]:
+    reg = fetch_one(
+        "SELECT Id, Studentref AS StudentRef FROM Registration WHERE Id = ?",
+        (registration_ref,),
+    )
+    if not reg:
+        raise _bad_request("ثبت‌نام معتبر نیست")
+    if int(reg["StudentRef"]) != int(student_ref):
+        raise _bad_request("ثبت‌نام انتخاب‌شده متعلق به این زبان‌آموز نیست")
+    return reg
+
+
+def _sync_after_payment(registration_ref: Optional[int], status: Optional[str] = None) -> None:
+    if not registration_ref:
+        return
+    sync_registration_financial_status(int(registration_ref))
+    if status == "paid":
+        execute(
+            """UPDATE Registration SET Status = N'active'
+               WHERE Id = ? AND Status = N'pending_payment'""",
+            (registration_ref,),
+        )
+
+
 @app.post("/payments", status_code=201)
 async def create_payment(body: PaymentCreate, user: dict = FinanceDep):
     if not fetch_one("SELECT Id FROM Student WHERE Id = ?", (body.student_ref,)):
         raise _bad_request("پرداخت باید به دانشجو متصل باشد (BR-010)")
     if body.amount < 0:
         raise _bad_request("مبلغ منفی مجاز نیست (BR-003)")
-    if body.registration_ref and not fetch_one(
-        "SELECT Id FROM Registration WHERE Id = ?", (body.registration_ref,)
-    ):
-        raise _bad_request("ثبت‌نام معتبر نیست")
+    _validate_payment_registration(body.student_ref, body.registration_ref)
 
-    method_to_type = {"cash": 1, "card": 2, "online": 3, "installment": 4, "other": 5}
-    payment_type = body.payment_type or method_to_type.get(body.payment_method, 5)
+    payment_type = body.payment_type or _payment_method_to_type(body.payment_method)
 
     new_id = execute_returning_id(
         """INSERT INTO Payment
@@ -2456,65 +3700,294 @@ async def create_payment(body: PaymentCreate, user: dict = FinanceDep):
         ),
     )
 
-    if body.registration_ref and body.status == "paid":
-        sync_registration_financial_status(body.registration_ref)
-        execute(
-            """UPDATE Registration SET Status = N'active'
-               WHERE Id = ? AND Status = N'pending_payment'""",
-            (body.registration_ref,),
-        )
-
+    _sync_after_payment(body.registration_ref, body.status)
     return {"message": "Payment created", "id": new_id}
 
 
+@app.put("/payments/{payment_id}")
+async def update_payment(payment_id: int, body: PaymentUpdate, user: dict = FinanceDep):
+    current = fetch_one("SELECT * FROM Payment WHERE Id = ?", (payment_id,))
+    if not current:
+        raise _not_found("Payment")
+
+    data = body.model_dump(exclude_unset=True)
+    if not data:
+        raise _bad_request("هیچ فیلدی برای به‌روزرسانی ارسال نشده است")
+
+    student_ref = int(data.get("student_ref", current["StudentRef"]))
+    registration_ref = data.get("registration_ref", current.get("RegistrationRef"))
+    if registration_ref is None:
+        raise _bad_request("ثبت‌نام مرتبط الزامی است")
+    registration_ref = int(registration_ref)
+
+    if "student_ref" in data and not fetch_one("SELECT Id FROM Student WHERE Id = ?", (student_ref,)):
+        raise _bad_request("پرداخت باید به دانشجو متصل باشد (BR-010)")
+    if "amount" in data and data["amount"] is not None and data["amount"] < 0:
+        raise _bad_request("مبلغ منفی مجاز نیست (BR-003)")
+
+    _validate_payment_registration(student_ref, registration_ref)
+
+    method = data.get("payment_method", current.get("PaymentMethod") or "cash")
+    if "payment_type" not in data and "payment_method" in data:
+        data["payment_type"] = _payment_method_to_type(method)
+
+    column_map = {
+        "student_ref": "StudentRef",
+        "registration_ref": "RegistrationRef",
+        "amount": "Amount",
+        "date": "Date",
+        "payment_method": "PaymentMethod",
+        "status": "Status",
+        "description": "Description",
+        "payment_type": "PaymentType",
+    }
+    fields: list[str] = []
+    params: list[Any] = []
+    for key, col in column_map.items():
+        if key in data:
+            fields.append(f"[{col}] = ?")
+            params.append(data[key])
+    params.append(payment_id)
+    execute(f"UPDATE Payment SET {', '.join(fields)} WHERE Id = ?", tuple(params))
+
+    old_reg = current.get("RegistrationRef")
+    new_status = data.get("status", current.get("Status"))
+    for reg_id in {int(r) for r in (old_reg, registration_ref) if r}:
+        _sync_after_payment(reg_id, new_status if reg_id == registration_ref else None)
+
+    return {"message": "Payment updated", "id": payment_id}
+
+
+@app.delete("/payments/{payment_id}")
+async def delete_payment(payment_id: int, user: dict = FinanceDep):
+    current = fetch_one("SELECT * FROM Payment WHERE Id = ?", (payment_id,))
+    if not current:
+        raise _not_found("Payment")
+    execute("DELETE FROM Payment WHERE Id = ?", (payment_id,))
+    _sync_after_payment(current.get("RegistrationRef"))
+    return {"message": "Payment deleted", "id": payment_id}
+
+
 # ---------------------------------------------------------------------------
-# Scores
+# Scores / Placement
 # ---------------------------------------------------------------------------
 
+SCORE_SELECT = """
+    SELECT Sc.Id, Sc.StudentRef, Sc.RegistrationRef, Sc.ExamType,
+           Sc.ScoreValue, Sc.MaxScore, Sc.Notes, Sc.ExamDate, Sc.CreatedAt,
+           Sc.SuggestedLevelRef,
+           St.FirstName + N' ' + St.LastName AS StudentName,
+           C.Name AS CourseName,
+           Lv.Name AS SuggestedLevelName,
+           Lv.Code AS SuggestedLevelCode
+    FROM Score Sc
+    LEFT JOIN Student St ON Sc.StudentRef = St.Id
+    LEFT JOIN Registration R ON Sc.RegistrationRef = R.Id
+    LEFT JOIN Course C ON R.CourseRef = C.Id
+    LEFT JOIN Level Lv ON Sc.SuggestedLevelRef = Lv.Id
+"""
+
+
+def _validate_score_links(
+    *,
+    student_ref: int,
+    registration_ref: Optional[int],
+    exam_type: str,
+    suggested_level_ref: Optional[int],
+) -> None:
+    if not fetch_one("SELECT Id FROM Student WHERE Id = ? AND IsActive = 1", (student_ref,)):
+        # زبان‌آموز آرشیو هم برای سابقهٔ نمره قابل پذیرش است
+        if not fetch_one("SELECT Id FROM Student WHERE Id = ?", (student_ref,)):
+            raise _bad_request("زبان‌آموز معتبر نیست")
+    if registration_ref is not None:
+        reg = fetch_one(
+            "SELECT Id, Studentref AS StudentRef FROM Registration WHERE Id = ?",
+            (registration_ref,),
+        )
+        if not reg:
+            raise _bad_request("ثبت‌نام معتبر نیست")
+        if int(reg["StudentRef"]) != int(student_ref):
+            raise _bad_request("ثبت‌نام انتخاب‌شده متعلق به این زبان‌آموز نیست")
+    elif exam_type != "placement":
+        raise _bad_request("برای این نوع آزمون، ثبت‌نام مرتبط الزامی است")
+    if suggested_level_ref is not None:
+        if not fetch_one("SELECT Id FROM Level WHERE Id = ? AND IsActive = 1", (suggested_level_ref,)):
+            raise _bad_request("سطح پیشنهادی معتبر نیست")
+
+
 @app.get("/scores")
-async def list_scores(registration_ref: Optional[int] = None, exam_type: Optional[str] = None, user: dict = AuthDep):
-    query = """
-        SELECT Sc.Id, Sc.RegistrationRef, Sc.ExamType, Sc.ScoreValue, Sc.MaxScore,
-               Sc.Notes, Sc.ExamDate, Sc.CreatedAt,
-               St.FirstName + N' ' + St.LastName AS StudentName,
-               C.Name AS CourseName
-        FROM Score Sc
-        JOIN Registration R ON Sc.RegistrationRef = R.Id
-        JOIN Student St ON R.Studentref = St.Id
-        JOIN Course C ON R.CourseRef = C.Id
-        WHERE 1=1
-    """
+async def list_scores(
+    student_ref: Optional[int] = None,
+    registration_ref: Optional[int] = None,
+    exam_type: Optional[str] = None,
+    search: Optional[str] = None,
+    user: dict = AuthDep,
+):
+    roles = _user_role_set(user)
+    can_all = bool(roles & {"admin", "secretary", "education", "teacher"})
+    can_see_placement = bool(roles & {"admin", "secretary", "education"})
+    query = SCORE_SELECT + " WHERE 1=1"
     params: list[Any] = []
+
+    if not can_all:
+        own = user.get("StudentRef")
+        if not own:
+            raise HTTPException(status_code=403, detail="دسترسی به نمرات ندارید")
+        query += " AND Sc.StudentRef = ?"
+        params.append(int(own))
+    elif student_ref is not None:
+        query += " AND Sc.StudentRef = ?"
+        params.append(student_ref)
+
+    # مدرس نتایج تعیین سطح را نمی‌بیند
+    if can_all and not can_see_placement:
+        if exam_type == "placement":
+            raise HTTPException(status_code=403, detail="مدرس مجاز به مشاهده نتایج تعیین سطح نیست")
+        query += " AND Sc.ExamType <> N'placement'"
+
     if registration_ref is not None:
         query += " AND Sc.RegistrationRef = ?"
         params.append(registration_ref)
     if exam_type:
         query += " AND Sc.ExamType = ?"
         params.append(exam_type)
+    if search:
+        like = f"%{search.strip()}%"
+        query += """ AND (
+            St.FirstName + N' ' + St.LastName LIKE ?
+            OR C.Name LIKE ?
+            OR Lv.Name LIKE ?
+            OR CAST(Sc.Id AS NVARCHAR(20)) LIKE ?
+        )"""
+        params.extend([like, like, like, like])
     query += " ORDER BY Sc.Id DESC"
     return _ok_list("scores", fetch_all(query, tuple(params)))
 
 
 @app.post("/scores", status_code=201)
 async def create_score(body: ScoreCreate, user: dict = TeacherStaffDep):
-    if not fetch_one("SELECT Id FROM Registration WHERE Id = ?", (body.registration_ref,)):
-        raise _bad_request("ثبت‌نام معتبر نیست")
+    roles = _user_role_set(user)
+    if body.exam_type == "placement" and not (roles & {"admin", "secretary", "education"}):
+        raise HTTPException(status_code=403, detail="مدرس مجاز به ثبت نتیجه تعیین سطح نیست")
     if body.score_value > body.max_score:
         raise _bad_request("نمره خارج از بازه مجاز است (BR-012)")
+    _validate_score_links(
+        student_ref=body.student_ref,
+        registration_ref=body.registration_ref,
+        exam_type=body.exam_type,
+        suggested_level_ref=body.suggested_level_ref,
+    )
     new_id = execute_returning_id(
         """INSERT INTO Score
-            ([RegistrationRef], [ExamType], [ScoreValue], [MaxScore], [Notes], [ExamDate])
-           VALUES (?, ?, ?, ?, ?, ?)""",
+            ([StudentRef], [RegistrationRef], [ExamType], [ScoreValue], [MaxScore],
+             [Notes], [ExamDate], [SuggestedLevelRef])
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
+            body.student_ref,
             body.registration_ref,
             body.exam_type,
             body.score_value,
             body.max_score,
             body.notes,
             body.exam_date,
+            body.suggested_level_ref,
         ),
     )
     return {"message": "Score created", "id": new_id}
+
+
+@app.put("/scores/{score_id}")
+async def update_score(score_id: int, body: ScoreUpdate, user: dict = TeacherStaffDep):
+    current = fetch_one("SELECT * FROM Score WHERE Id = ?", (score_id,))
+    if not current:
+        raise _not_found("Score")
+
+    roles = _user_role_set(user)
+    can_placement = bool(roles & {"admin", "secretary", "education"})
+    if (current.get("ExamType") or "") == "placement" and not can_placement:
+        raise HTTPException(status_code=403, detail="مدرس مجاز به ویرایش نتایج تعیین سطح نیست")
+
+    data = body.model_dump(exclude_unset=True)
+    clear_registration = bool(data.pop("clear_registration", False))
+    clear_suggested = bool(data.pop("clear_suggested_level", False))
+    if not data and not clear_registration and not clear_suggested:
+        raise _bad_request("هیچ فیلدی برای به‌روزرسانی ارسال نشده است")
+
+    student_ref = int(data.get("student_ref", current.get("StudentRef") or 0))
+    if not student_ref and current.get("RegistrationRef"):
+        reg = fetch_one(
+            "SELECT Studentref AS StudentRef FROM Registration WHERE Id = ?",
+            (current["RegistrationRef"],),
+        )
+        student_ref = int(reg["StudentRef"]) if reg else 0
+
+    if "registration_ref" in data:
+        registration_ref = data["registration_ref"]
+    elif clear_registration:
+        registration_ref = None
+    else:
+        registration_ref = current.get("RegistrationRef")
+
+    exam_type = data.get("exam_type", current.get("ExamType") or "placement")
+    if exam_type == "placement" and not can_placement:
+        raise HTTPException(status_code=403, detail="مدرس مجاز به ثبت نتیجه تعیین سطح نیست")
+    if "suggested_level_ref" in data:
+        suggested = data["suggested_level_ref"]
+    elif clear_suggested:
+        suggested = None
+    else:
+        suggested = current.get("SuggestedLevelRef")
+
+    score_value = float(data.get("score_value", current["ScoreValue"]))
+    max_score = float(data.get("max_score", current["MaxScore"]))
+    if score_value > max_score:
+        raise _bad_request("نمره خارج از بازه مجاز است (BR-012)")
+
+    _validate_score_links(
+        student_ref=student_ref,
+        registration_ref=int(registration_ref) if registration_ref is not None else None,
+        exam_type=exam_type,
+        suggested_level_ref=int(suggested) if suggested is not None else None,
+    )
+
+    execute(
+        """UPDATE Score SET
+              StudentRef = ?,
+              RegistrationRef = ?,
+              ExamType = ?,
+              ScoreValue = ?,
+              MaxScore = ?,
+              Notes = ?,
+              ExamDate = ?,
+              SuggestedLevelRef = ?
+           WHERE Id = ?""",
+        (
+            student_ref,
+            registration_ref,
+            exam_type,
+            score_value,
+            max_score,
+            data["notes"] if "notes" in data else current.get("Notes"),
+            data["exam_date"] if "exam_date" in data else current.get("ExamDate"),
+            suggested,
+            score_id,
+        ),
+    )
+    return {"message": "Score updated", "id": score_id}
+
+
+@app.delete("/scores/{score_id}")
+async def delete_score(score_id: int, user: dict = TeacherStaffDep):
+    current = fetch_one("SELECT Id, ExamType FROM Score WHERE Id = ?", (score_id,))
+    if not current:
+        raise _not_found("Score")
+    roles = _user_role_set(user)
+    if (current.get("ExamType") or "") == "placement" and not (
+        roles & {"admin", "secretary", "education"}
+    ):
+        raise HTTPException(status_code=403, detail="مدرس مجاز به حذف نتایج تعیین سطح نیست")
+    execute("DELETE FROM Score WHERE Id = ?", (score_id,))
+    return {"message": "Score deleted", "id": score_id}
 
 
 # ---------------------------------------------------------------------------
@@ -2569,6 +4042,23 @@ async def report_summary(user: dict = FinanceDep):
         ORDER BY COUNT(*) DESC
         """
     )
+    payments_by_status = fetch_all(
+        """
+        SELECT Status AS label, COUNT(*) AS value, ISNULL(SUM(Amount), 0) AS amount
+        FROM Payment
+        GROUP BY Status
+        ORDER BY COUNT(*) DESC
+        """
+    )
+    finance_by_status = fetch_all(
+        """
+        SELECT FinancialStatus AS label, COUNT(*) AS value
+        FROM Registration
+        WHERE FinancialStatus IN (N'debtor', N'creditor', N'settled')
+        GROUP BY FinancialStatus
+        ORDER BY COUNT(*) DESC
+        """
+    )
     capacity = fetch_one(
         """
         SELECT
@@ -2603,4 +4093,38 @@ async def report_summary(user: dict = FinanceDep):
         "courses_by_language": [
             {"label": r["label"], "value": int(r["value"])} for r in courses_by_language
         ],
+        "payments_by_status": [
+            {
+                "label": r["label"],
+                "value": int(r["value"]),
+                "amount": int(r["amount"] or 0),
+            }
+            for r in payments_by_status
+        ],
+        "finance_by_status": [
+            {"label": r["label"], "value": int(r["value"])} for r in finance_by_status
+        ],
     }
+
+
+@app.get("/activities")
+async def get_activities(
+    search: Optional[str] = None,
+    action_code: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    user_ref: Optional[int] = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = AdminDep,
+):
+    data = list_activities(
+        search=search,
+        action_code=action_code,
+        entity_type=entity_type,
+        user_ref=user_ref,
+        limit=limit,
+        offset=offset,
+    )
+    data["action_labels"] = ACTION_LABELS
+    data["entity_labels"] = ENTITY_LABELS
+    return data

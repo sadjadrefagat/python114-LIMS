@@ -33,6 +33,10 @@ export function AuthProvider({ children }) {
       user,
       loading,
       isAuthenticated: Boolean(user),
+      setUserLocal(next) {
+        setUser(next)
+        authStorage.setStoredUser(next)
+      },
       hasRole: (...roles) => {
         if (!user?.role) return false
         if (user.role === 'admin') return true

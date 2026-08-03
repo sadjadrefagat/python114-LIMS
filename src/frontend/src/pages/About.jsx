@@ -52,7 +52,7 @@ const TEAM_LEAD = {
   name: 'سجاد رفاقت',
   titles: ['راهبر تیم', 'مدیر محصول', 'طراح و معمار ارشد نرم‌افزار'],
   email: 'sadjadrefagat@gmail.com',
-  avatar: '/avatars/avatar-sadjad.jpg?v=4',
+  avatar: '/avatars/avatar-sadjad.jpg?v=6',
 }
 
 function Person({ person, featured = false }) {
@@ -101,7 +101,7 @@ export default function About() {
             <a href="#team" className="btn btn-brand btn-lg rounded-pill px-4">
               آشنایی با تیم
             </a>
-            <Link to="/courses" className="btn btn-outline-light btn-lg rounded-pill px-4">
+            <Link to="/courses" className="btn btn-lg rounded-pill px-4 about-hero-cta-secondary">
               مشاهده دوره‌ها
             </Link>
           </div>

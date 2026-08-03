@@ -109,7 +109,8 @@ def validate_time_hhmm(value: str, *, field_name: str = "ساعت") -> str:
     if re.fullmatch(r"\d{2}:\d{2}:\d{2}", text):
         text = text[:5]
     if not _TIME_RE.fullmatch(text):
-        raise ValueError(f"{field_name} باید به صورت HH:MM و بین ۰۰:۰۰ تا ۲۳:۵۹ باشد")
+        raise ValueError(
+            f"{field_name} باید به صورت HH:MM و بین ۰۰:۰۰ تا ۲۳:۵۹ باشد")
     return text
 
 
@@ -174,7 +175,8 @@ def format_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any
     """تبدیل خطاهای Pydantic به پیام فارسی برای کلاینت"""
     out: list[dict[str, Any]] = []
     for err in errors:
-        loc = [x for x in err.get("loc", ()) if x not in ("body", "query", "path")]
+        loc = [x for x in err.get("loc", ()) if x not in (
+            "body", "query", "path")]
         field = str(loc[-1]) if loc else ""
         label = FIELD_LABELS_FA.get(field, field or "مقدار")
         typ = err.get("type", "")
@@ -182,7 +184,8 @@ def format_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any
         ctx = err.get("ctx") or {}
 
         if typ == "value_error":
-            msg = raw_msg.replace("Value error, ", "").replace("Value error,", "").strip()
+            msg = raw_msg.replace("Value error, ", "").replace(
+                "Value error,", "").strip()
         elif typ in ("missing", "missing_argument"):
             msg = f"{label} الزامی است"
         elif typ == "string_too_short":
@@ -281,6 +284,22 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=8, max_length=100)
 
 
+UiThemeCode = Literal[
+    "light",
+    "dark",
+    "ocean",
+    "forest",
+    "sunset",
+    "rose",
+    "sunny",
+    "midnight",
+]
+
+
+class ThemeUpdateRequest(BaseModel):
+    ui_theme: UiThemeCode
+
+
 StaffAssignableRole = Literal[
     "admin",
     "secretary",
@@ -327,6 +346,17 @@ class StaffUserUpdate(BaseModel):
             return None
         v = v.strip()
         return v or None
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=8, max_length=100)
+    confirm_password: str = Field(..., min_length=8, max_length=100)
+
+    @model_validator(mode="after")
+    def passwords_must_match(self):
+        if self.new_password != self.confirm_password:
+            raise ValueError("رمز و تکرار آن یکسان نیست")
+        return self
 
 
 class TokenResponse(BaseModel):
@@ -385,6 +415,44 @@ TeachingMethod = Literal[
 ]
 AgeGroup = Literal["کودک", "نوجوان", "جوان", "بزرگسال", "همه سنین"]
 
+# بازه سن مجاز برای هر رده (سال کامل؛ None = بدون حد)
+# کودک ۳–۱۱ | نوجوان ۱۲–۱۷ | جوان ۱۸–۲۹ | بزرگسال ۳۰+ | همه سنین بدون محدودیت
+AGE_GROUP_RULES: dict[str, tuple[Optional[int], Optional[int]]] = {
+    "کودک": (3, 11),
+    "نوجوان": (12, 17),
+    "جوان": (18, 29),
+    "بزرگسال": (30, None),
+    "همه سنین": (None, None),
+}
+
+
+def age_group_range_label(age_group: str) -> str:
+    rules = AGE_GROUP_RULES.get(age_group)
+    if not rules:
+        return age_group
+    mn, mx = rules
+    if mn is None and mx is None:
+        return f"{age_group} (بدون محدودیت سنی)"
+    if mn is not None and mx is None:
+        return f"{age_group} ({mn} سال به بالا)"
+    if mn is None and mx is not None:
+        return f"{age_group} (تا {mx} سال)"
+    return f"{age_group} ({mn} تا {mx} سال)"
+
+
+def age_group_catalog() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for code, (mn, mx) in AGE_GROUP_RULES.items():
+        out.append(
+            {
+                "code": code,
+                "min_age": mn,
+                "max_age": mx,
+                "label": age_group_range_label(code),
+            }
+        )
+    return out
+
 
 class CourseCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
@@ -418,7 +486,8 @@ class CourseUpdate(BaseModel):
 
 
 # ---------- Class ----------
-ClassStatus = Literal["draft", "open", "full", "in_progress", "finished", "cancelled"]
+ClassStatus = Literal["draft", "open", "full",
+                      "in_progress", "finished", "cancelled"]
 ClassType = Literal["group", "semi_private", "private", "vip"]
 
 
@@ -477,7 +546,8 @@ class ClassUpdate(BaseModel):
 
 
 # ---------- Session ----------
-SessionStatus = Literal["scheduled", "in_progress", "completed", "cancelled", "rescheduled"]
+SessionStatus = Literal["scheduled", "in_progress",
+                        "completed", "cancelled", "rescheduled"]
 
 
 class SessionCreate(BaseModel):
@@ -643,6 +713,25 @@ class StudentUpdate(BaseModel):
         return validate_birth_date(v)
 
 
+class StudentBulkDelete(BaseModel):
+    """حذف قطعی چند زبان‌آموز از پایگاه داده"""
+    ids: list[int] = Field(..., min_length=1)
+
+    @field_validator("ids")
+    @classmethod
+    def unique_ids(cls, v: list[int]) -> list[int]:
+        seen: set[int] = set()
+        out: list[int] = []
+        for i in v:
+            sid = int(i)
+            if sid not in seen:
+                seen.add(sid)
+                out.append(sid)
+        if not out:
+            raise ValueError("حداقل یک زبان‌آموز انتخاب کنید")
+        return out
+
+
 class TeacherCreate(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=50)
     last_name: str = Field(..., min_length=1, max_length=50)
@@ -712,7 +801,8 @@ EnrollmentStatus = Literal[
     "pending_payment", "pending_approval", "active", "frozen", "completed", "withdrawn", "transferred"
 ]
 FinancialStatus = Literal["debtor", "creditor", "settled"]
-PaymentStatus = Literal["draft", "pending", "paid", "failed", "refunded", "partially_paid", "overdue"]
+PaymentStatus = Literal["draft", "pending", "paid",
+                        "failed", "refunded", "partially_paid", "overdue"]
 PaymentMethod = Literal["cash", "card", "online", "installment", "other"]
 ExamType = Literal["placement", "midterm", "final", "quiz", "assignment"]
 
@@ -720,7 +810,8 @@ ExamType = Literal["placement", "midterm", "final", "quiz", "assignment"]
 class EnrollmentCreate(BaseModel):
     student_ref: int
     class_ref: int
-    course_ref: Optional[int] = None  # در صورت خالی بودن از Course کلاس پر می‌شود
+    # در صورت خالی بودن از Course کلاس پر می‌شود
+    course_ref: Optional[int] = None
     date: str
     status: EnrollmentStatus = "pending_payment"
     financial_status: FinancialStatus = "debtor"
@@ -767,11 +858,12 @@ class EnrollmentUpdate(BaseModel):
 
 class PaymentCreate(BaseModel):
     student_ref: int
+    registration_ref: int = Field(...,
+                                  description="پرداخت باید به یک ثبت‌نام مشخص وصل باشد")
     amount: int = Field(..., ge=0)
     date: str
     payment_method: PaymentMethod
     status: PaymentStatus = "paid"
-    registration_ref: Optional[int] = None
     description: Optional[str] = None
     payment_type: Optional[int] = None  # سازگاری با ستون قدیمی
 
@@ -781,13 +873,62 @@ class PaymentCreate(BaseModel):
         return validate_jalali_date(v, field_name="تاریخ پرداخت")
 
 
+class PaymentUpdate(BaseModel):
+    student_ref: Optional[int] = None
+    registration_ref: Optional[int] = None
+    amount: Optional[int] = Field(None, ge=0)
+    date: Optional[str] = None
+    payment_method: Optional[PaymentMethod] = None
+    status: Optional[PaymentStatus] = None
+    description: Optional[str] = None
+    payment_type: Optional[int] = None
+
+    @field_validator("date")
+    @classmethod
+    def date_check(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        return validate_jalali_date(v, field_name="تاریخ پرداخت")
+
+
 class ScoreCreate(BaseModel):
-    registration_ref: int
-    exam_type: ExamType
+    student_ref: int
+    registration_ref: Optional[int] = None
+    exam_type: ExamType = "placement"
     score_value: float = Field(..., ge=0)
     max_score: float = Field(100, gt=0)
     notes: Optional[str] = None
     exam_date: Optional[str] = None
+    suggested_level_ref: Optional[int] = None
+
+    @field_validator("exam_date")
+    @classmethod
+    def exam_date_check(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        return validate_jalali_date(v, field_name="تاریخ آزمون")
+
+    @model_validator(mode="after")
+    def check_links(self) -> "ScoreCreate":
+        if self.score_value > self.max_score:
+            raise ValueError("نمره خارج از بازه مجاز است")
+        # میان‌ترم / پایان‌ترم / کوییز / تکلیف باید به ثبت‌نام وصل باشند
+        if self.exam_type != "placement" and not self.registration_ref:
+            raise ValueError("برای این نوع آزمون، ثبت‌نام مرتبط الزامی است")
+        return self
+
+
+class ScoreUpdate(BaseModel):
+    student_ref: Optional[int] = None
+    registration_ref: Optional[int] = None
+    exam_type: Optional[ExamType] = None
+    score_value: Optional[float] = Field(None, ge=0)
+    max_score: Optional[float] = Field(None, gt=0)
+    notes: Optional[str] = None
+    exam_date: Optional[str] = None
+    suggested_level_ref: Optional[int] = None
+    clear_registration: bool = False
+    clear_suggested_level: bool = False
 
     @field_validator("exam_date")
     @classmethod
@@ -800,3 +941,54 @@ class ScoreCreate(BaseModel):
 class MessageOut(BaseModel):
     message: str
     id: Optional[int] = None
+
+
+# ---------- فروشگاه اقلام آموزشی ----------
+ShopProductType = Literal["book", "file", "stationery", "course_pack", "other"]
+
+
+class ShopCategoryCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class ShopCategoryUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class ShopProductCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    category_ref: Optional[int] = None
+    sku: Optional[str] = Field(None, max_length=50)
+    description: Optional[str] = None
+    price: int = Field(..., ge=0)
+    stock: int = Field(0, ge=0)
+    product_type: ShopProductType = "other"
+    image_url: Optional[str] = Field(None, max_length=500)
+    is_active: bool = True
+    is_featured: bool = False
+
+
+class ShopProductUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    category_ref: Optional[int] = None
+    sku: Optional[str] = Field(None, max_length=50)
+    description: Optional[str] = None
+    price: Optional[int] = Field(None, ge=0)
+    stock: Optional[int] = Field(None, ge=0)
+    product_type: Optional[ShopProductType] = None
+    image_url: Optional[str] = Field(None, max_length=500)
+    is_active: Optional[bool] = None
+    is_featured: Optional[bool] = None
+
+
+class CartItemUpsert(BaseModel):
+    product_ref: int
+    qty: int = Field(1, ge=0, le=99)
+
+
+class ShopCheckoutRequest(BaseModel):
+    note: Optional[str] = Field(None, max_length=500)

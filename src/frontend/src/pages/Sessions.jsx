@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import Loading from '../components/Loading'
@@ -47,6 +48,7 @@ function isValidTime(value) {
 
 export default function Sessions() {
   const { user, hasRole } = useAuth()
+  const location = useLocation()
   const canManage = hasRole('admin', 'secretary', 'education')
   const canAttendance = hasRole('admin', 'secretary', 'education', 'teacher')
   const [askConfirm, confirmDialog] = useConfirmDialog()
@@ -78,9 +80,17 @@ export default function Sessions() {
     setLoading(true)
     try {
       const query = q.trim() ? `?search=${encodeURIComponent(q.trim())}` : ''
+      const sessionPath =
+        user?.role === 'teacher' && user?.teacher_ref
+          ? `/me/teaching/sessions${query}`
+          : `/sessions${query}`
+      const classPath =
+        user?.role === 'teacher' && user?.teacher_ref
+          ? '/me/teaching/classes'
+          : '/classes'
       const [s, c, st] = await Promise.all([
-        api.get(`/sessions${query}`),
-        api.get('/classes'),
+        api.get(sessionPath),
+        api.get(classPath),
         api.get('/session-types'),
       ])
       setRows(s.sessions || [])
@@ -98,7 +108,14 @@ export default function Sessions() {
     const t = setTimeout(() => load(search), 250)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search])
+  }, [search, user?.role, user?.teacher_ref])
+
+  useEffect(() => {
+    const sid = location.state?.openAttendance
+    if (sid && canAttendance) {
+      setAttendanceSessionId(Number(sid))
+    }
+  }, [location.state, canAttendance])
 
   function resetForm() {
     setEditId(null)

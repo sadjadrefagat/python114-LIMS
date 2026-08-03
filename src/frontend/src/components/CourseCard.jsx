@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { formatMoney } from '../api/client'
+import { ageGroupLabel } from '../utils/ageGroups'
 
 const LANG_TONES = ['teal', 'sky', 'coral', 'sun', 'rose', 'violet']
 
@@ -46,7 +47,7 @@ export default function CourseCard({ course, canManage = false, onEdit, onDelete
           {course.AgeGroup ? (
             <li>
               <i className="bi bi-people" />
-              <span>{course.AgeGroup}</span>
+              <span>{ageGroupLabel(course.AgeGroup)}</span>
             </li>
           ) : null}
           {course.TeachingMethod ? (

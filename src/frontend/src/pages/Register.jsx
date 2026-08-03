@@ -37,7 +37,7 @@ function isFocusableField(el) {
 }
 
 export default function Register() {
-  const { register, isAuthenticated } = useAuth()
+  const { register, isAuthenticated, user } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const redirectTo = location.state?.from || '/dashboard'
@@ -49,8 +49,14 @@ export default function Register() {
   const today = useMemo(() => todayJalaliString(), [])
 
   useEffect(() => {
-    if (isAuthenticated) navigate(redirectTo, { replace: true })
-  }, [isAuthenticated, navigate, redirectTo])
+    if (!isAuthenticated) return
+    // پرسنل / مالی نباید از این مسیر حساب زبان‌آموز بسازند
+    if (user?.role && user.role !== 'student') {
+      navigate('/dashboard', { replace: true })
+      return
+    }
+    navigate(redirectTo, { replace: true })
+  }, [isAuthenticated, user, navigate, redirectTo])
 
   useEffect(() => {
     api

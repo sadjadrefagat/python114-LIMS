@@ -1,7 +1,7 @@
 /**
- * دکمه‌های آیکونی مشاهده / حضور / ویرایش / حذف
+ * دکمه‌های آیکونی مشاهده / حضور / ویرایش / ریست رمز / حذف
  */
-export default function RowActions({ onView, onAttendance, onEdit, onDelete }) {
+export default function RowActions({ onView, onAttendance, onEdit, onResetPassword, onDelete }) {
   return (
     <div className="row-actions">
       {onView ? (
@@ -35,6 +35,17 @@ export default function RowActions({ onView, onAttendance, onEdit, onDelete }) {
           onClick={onEdit}
         >
           <i className="bi bi-pencil" />
+        </button>
+      ) : null}
+      {onResetPassword ? (
+        <button
+          type="button"
+          className="row-action is-reset-password"
+          title="بازنشانی رمز عبور"
+          aria-label="بازنشانی رمز عبور"
+          onClick={onResetPassword}
+        >
+          <i className="bi bi-key" />
         </button>
       ) : null}
       {onDelete ? (

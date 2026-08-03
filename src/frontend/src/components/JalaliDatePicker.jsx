@@ -131,6 +131,22 @@ export function todayJalaliString() {
   return formatJalali(t.jy, t.jm, t.jd)
 }
 
+const WEEKDAYS_LONG = ['یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه', 'شنبه']
+
+/** برچسب کامل امروز برای هدر: «پنجشنبه ۳۰ تیر ۱۴۰۵» */
+export function todayJalaliLongLabel() {
+  const now = new Date()
+  const { jy, jm, jd } = gregorianToJalali(now.getFullYear(), now.getMonth() + 1, now.getDate())
+  return {
+    weekday: WEEKDAYS_LONG[now.getDay()],
+    day: jd,
+    month: MONTHS[jm - 1],
+    year: jy,
+    iso: formatJalali(jy, jm, jd),
+    label: `${WEEKDAYS_LONG[now.getDay()]} ${jd} ${MONTHS[jm - 1]} ${jy}`,
+  }
+}
+
 /** مقایسه رشته‌های YYYY/MM/DD شمسی؛ منفی = a قبل از b */
 export function compareJalali(a, b) {
   const pa = parseJalali(a)

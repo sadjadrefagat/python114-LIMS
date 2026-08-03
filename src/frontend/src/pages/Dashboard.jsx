@@ -17,6 +17,7 @@ import {
 import { api, formatMoney, roleLabel } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import Loading from '../components/Loading'
+import TeacherDashboard from './TeacherDashboard'
 
 const ENROLL_STATUS_FA = {
   pending_payment: 'در انتظار پرداخت',
@@ -37,7 +38,31 @@ const CLASS_STATUS_FA = {
   cancelled: 'لغو',
 }
 
+const PAYMENT_STATUS_FA = {
+  draft: 'پیش‌نویس',
+  pending: 'در انتظار',
+  paid: 'پرداخت‌شده',
+  failed: 'ناموفق',
+  refunded: 'استرداد',
+  partially_paid: 'پرداخت جزئی',
+  overdue: 'سررسید گذشته',
+}
+
+const FINANCE_STATUS_FA = {
+  debtor: 'بدهکار',
+  creditor: 'بستانکار',
+  settled: 'تسویه‌شده',
+}
+
+const FINANCE_COLORS = {
+  debtor: '#e91e63',
+  creditor: '#4caf50',
+  settled: '#00bcd4',
+}
+
+const PAYMENT_COLORS = ['#4caf50', '#ff9800', '#9e9e9e', '#e91e63', '#3f51b5', '#795548', '#607d8b']
 const PIE_COLORS = ['#e91e63', '#00bcd4', '#4caf50', '#ff9800', '#9c27b0', '#3f51b5', '#607d8b']
+
 
 function num(n) {
   return Number(n || 0).toLocaleString('en-US')
@@ -77,6 +102,9 @@ export default function Dashboard() {
   const { user, hasRole } = useAuth()
   const canOps = hasRole('admin', 'secretary', 'finance')
   const canStaff = hasRole('admin', 'secretary', 'education')
+  const isFinanceOnly = user?.role === 'finance'
+  const isTeacherOnly = user?.role === 'teacher'
+  const staffPath = (path) => (isFinanceOnly ? undefined : path)
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -118,6 +146,28 @@ export default function Dashboard() {
     [summary],
   )
 
+  const paymentStatusData = useMemo(
+    () =>
+      (summary?.payments_by_status || []).map((r) => ({
+        name: PAYMENT_STATUS_FA[r.label] || r.label,
+        value: Number(r.value) || 0,
+        amount: Number(r.amount) || 0,
+        key: r.label,
+      })),
+    [summary],
+  )
+
+  const financeStatusData = useMemo(
+    () =>
+      (summary?.finance_by_status || []).map((r) => ({
+        name: FINANCE_STATUS_FA[r.label] || r.label,
+        value: Number(r.value) || 0,
+        key: r.label,
+        fill: FINANCE_COLORS[r.label] || '#607d8b',
+      })),
+    [summary],
+  )
+
   const capTotal = summary?.capacity_total || 0
   const capUsed = summary?.capacity_used || 0
   const capPct = capTotal > 0 ? Math.min(100, Math.round((capUsed / capTotal) * 100)) : 0
@@ -132,11 +182,18 @@ export default function Dashboard() {
 
   const links = [
     { to: '/courses', title: 'دوره‌ها', icon: 'bi-journal-bookmark' },
+    user?.student_ref && !isFinanceOnly && !isTeacherOnly && { to: '/my-courses', title: 'دوره‌های من', icon: 'bi-journal-bookmark-fill' },
+    user?.student_ref && !isFinanceOnly && !isTeacherOnly && { to: '/placement', title: 'آزمون تعیین سطح', icon: 'bi-clipboard2-check' },
     canStaff && { to: '/classes', title: 'کلاس‌ها', icon: 'bi-people' },
     canStaff && { to: '/sessions', title: 'جلسات', icon: 'bi-calendar3' },
+    canStaff && { to: '/scores', title: 'نمرات و تعیین سطح', icon: 'bi-clipboard2-data' },
+    isTeacherOnly && { to: '/scores', title: 'نمرات', icon: 'bi-clipboard2-data' },
+    (canStaff || hasRole('teacher')) && { to: '/placement/bank', title: 'مخزن آزمون تعیین سطح', icon: 'bi-ui-checks-grid' },
     canStaff && { to: '/students', title: 'زبان‌آموزان', icon: 'bi-mortarboard' },
     canStaff && { to: '/teachers', title: 'مدرسان', icon: 'bi-person-workspace' },
     canStaff && { to: '/enrollments', title: 'ثبت‌نام‌ها', icon: 'bi-clipboard-check' },
+    (canStaff || isFinanceOnly) && { to: '/payments', title: 'پرداخت‌ها', icon: 'bi-wallet2' },
+    hasRole('admin') && { to: '/activities', title: 'فعالیت‌ها', icon: 'bi-clock-history' },
   ].filter(Boolean)
 
   return (
@@ -169,7 +226,7 @@ export default function Dashboard() {
                 category="زبان‌آموز فعال"
                 value={num(summary.students)}
                 footer="به‌روز از پایگاه داده"
-                to="/students"
+                to={staffPath('/students')}
               />
             </div>
             <div className="col-sm-6 col-xl-3">
@@ -179,7 +236,7 @@ export default function Dashboard() {
                 category="مدرس"
                 value={num(summary.teachers)}
                 footer={`${num(summary.sessions_scheduled)} جلسه برنامه‌ریزی‌شده`}
-                to="/teachers"
+                to={staffPath('/teachers')}
               />
             </div>
             <div className="col-sm-6 col-xl-3">
@@ -199,6 +256,7 @@ export default function Dashboard() {
                 category="پرداخت موفق"
                 value={formatMoney(summary.payments_paid_total)}
                 footer={`${num(summary.enrollments_active)} ثبت‌نام فعال`}
+                to="/payments"
               />
             </div>
           </div>
@@ -211,7 +269,7 @@ export default function Dashboard() {
                 category="کلاس باز / جاری"
                 value={num(summary.classes_open)}
                 footer={`از ${num(summary.classes_total)} کلاس`}
-                to="/classes"
+                to={staffPath('/classes')}
               />
             </div>
             <div className="col-sm-6 col-xl-3">
@@ -221,7 +279,7 @@ export default function Dashboard() {
                 category="ثبت‌نام فعال"
                 value={num(summary.enrollments_active)}
                 footer={`${num(summary.enrollments_total)} کل ثبت‌نام`}
-                to="/enrollments"
+                to={staffPath('/enrollments')}
               />
             </div>
             <div className="col-sm-6 col-xl-3">
@@ -231,7 +289,7 @@ export default function Dashboard() {
                 category="جلسات scheduled"
                 value={num(summary.sessions_scheduled)}
                 footer="وضعیت برنامه‌ریزی‌شده"
-                to="/sessions"
+                to={staffPath('/sessions')}
               />
             </div>
             <div className="col-sm-6 col-xl-3">
@@ -312,6 +370,63 @@ export default function Dashboard() {
           </div>
 
           <div className="row g-4 mt-1">
+            <div className="col-lg-6">
+              <ChartCard color="warning" title="وضعیت پرداخت‌ها" subtitle="تعداد و مبلغ بر اساس وضعیت">
+                <div className="md-chart-box">
+                  <ResponsiveContainer width="100%" height={220}>
+                    <PieChart>
+                      <Pie
+                        data={paymentStatusData.length ? paymentStatusData : [{ name: '—', value: 0 }]}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={48}
+                        outerRadius={78}
+                        paddingAngle={2}
+                      >
+                        {(paymentStatusData.length ? paymentStatusData : [{ name: '—' }]).map((entry, i) => (
+                          <Cell key={entry.name} fill={PAYMENT_COLORS[i % PAYMENT_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        formatter={(v, _n, item) => {
+                          const amount = item?.payload?.amount
+                          return amount != null
+                            ? `${num(v)} مورد · ${formatMoney(amount)}`
+                            : num(v)
+                        }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </ChartCard>
+            </div>
+            <div className="col-lg-6">
+              <ChartCard color="rose" title="بدهکار / بستانکار / تسویه" subtitle="وضعیت مالی ثبت‌نام‌ها">
+                <div className="md-chart-box">
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart
+                      data={financeStatusData.length ? financeStatusData : [{ name: '—', value: 0, fill: '#fff' }]}
+                      margin={{ top: 8, right: 8, left: -18, bottom: 0 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.25)" />
+                      <XAxis dataKey="name" tick={{ fill: '#fff', fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: '#fff', fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                      <Tooltip formatter={(v) => num(v)} />
+                      <Bar dataKey="value" radius={[6, 6, 0, 0]} maxBarSize={48}>
+                        {(financeStatusData.length ? financeStatusData : []).map((entry) => (
+                          <Cell key={entry.key || entry.name} fill="#fff" />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </ChartCard>
+            </div>
+          </div>
+
+          <div className="row g-4 mt-1">
             <div className="col-lg-8">
               <div className="md-plain-card">
                 <div className="md-plain-head">
@@ -362,20 +477,50 @@ export default function Dashboard() {
         </>
       )}
 
-      {!canOps && (
-        <div className="md-plain-card">
-          <div className="md-plain-head">
-            <h4>میانبرها</h4>
-          </div>
-          <div className="md-shortcuts">
-            {links.map((link) => (
-              <Link key={link.to} to={link.to} className="md-shortcut">
-                <span className="md-shortcut-icon">
-                  <i className={`bi ${link.icon}`} />
-                </span>
-                <span>{link.title}</span>
-              </Link>
-            ))}
+      {!canOps && isTeacherOnly && <TeacherDashboard />}
+
+      {!canOps && !isTeacherOnly && (
+        <div className="row g-4">
+          {user?.student_ref && (
+            <div className="col-md-6 col-xl-4">
+              <StatCard
+                color="success"
+                icon="bi-journal-bookmark-fill"
+                category="دوره‌های من"
+                value="مشاهده"
+                footer="وضعیت ثبت‌نام و کلاس‌ها"
+                to="/my-courses"
+              />
+            </div>
+          )}
+          {user?.student_ref && (
+            <div className="col-md-6 col-xl-4">
+              <StatCard
+                color="info"
+                icon="bi-clipboard2-check"
+                category="آزمون تعیین سطح"
+                value="شروع"
+                footer="شرکت آنلاین و اعلام خودکار سطح"
+                to="/placement"
+              />
+            </div>
+          )}
+          <div className="col-md-6 col-xl-8">
+            <div className="md-plain-card h-100">
+              <div className="md-plain-head">
+                <h4>میانبرها</h4>
+              </div>
+              <div className="md-shortcuts">
+                {links.map((link) => (
+                  <Link key={link.to} to={link.to} className="md-shortcut">
+                    <span className="md-shortcut-icon">
+                      <i className={`bi ${link.icon}`} />
+                    </span>
+                    <span>{link.title}</span>
+                  </Link>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       )}

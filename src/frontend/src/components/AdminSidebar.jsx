@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 
 const STAFF_GROUPS = [
@@ -10,20 +11,25 @@ const STAFF_GROUPS = [
       { to: '/courses', label: 'دوره‌ها', icon: 'bi-journal-bookmark' },
       { to: '/classes', label: 'کلاس‌ها', icon: 'bi-people' },
       { to: '/sessions', label: 'جلسات', icon: 'bi-calendar3' },
+      { to: '/scores', label: 'نمرات و تعیین سطح', icon: 'bi-clipboard2-data' },
+      { to: '/placement/bank', label: 'مخزن آزمون تعیین سطح', icon: 'bi-ui-checks-grid' },
     ],
   },
   {
-    title: 'افراد و ثبت‌نام',
+    title: 'افراد و مالی',
     items: [
       { to: '/teachers', label: 'مدرسان', icon: 'bi-person-workspace' },
       { to: '/students', label: 'زبان‌آموزان', icon: 'bi-person-lines-fill' },
       { to: '/enrollments', label: 'ثبت‌نام‌ها', icon: 'bi-clipboard-check' },
+      { to: '/payments', label: 'پرداخت‌ها', icon: 'bi-wallet2' },
+      { to: '/shop/admin', label: 'فروشگاه', icon: 'bi-shop-window' },
     ],
   },
   {
     title: 'تنظیمات',
     items: [
       { to: '/lookups', label: 'نوع جلسه و شعب', icon: 'bi-gear' },
+      { to: '/activities', label: 'فعالیت‌ها و لاگ', icon: 'bi-clock-history', adminOnly: true },
       { to: '/users', label: 'کاربران و دسترسی‌ها', icon: 'bi-shield-lock', adminOnly: true },
     ],
   },
@@ -31,9 +37,25 @@ const STAFF_GROUPS = [
 
 const TEACHER_GROUPS = [
   {
-    title: 'کلاس من',
+    title: 'پنل مدرس',
     items: [
-      { to: '/sessions', label: 'جلسات و حضور و غیاب', icon: 'bi-clipboard-check' },
+      { to: '/dashboard', label: 'داشبورد', icon: 'bi-speedometer2' },
+      { to: '/teacher/courses', label: 'دوره‌های من', icon: 'bi-journal-bookmark' },
+      { to: '/teacher/classes', label: 'کلاس‌های من', icon: 'bi-people' },
+      { to: '/teacher/students', label: 'زبان‌آموزان من', icon: 'bi-mortarboard' },
+      { to: '/teacher/attendance', label: 'حضور و غیاب', icon: 'bi-clipboard-check' },
+      { to: '/sessions', label: 'جلسات', icon: 'bi-calendar3' },
+      { to: '/scores', label: 'نمرات', icon: 'bi-clipboard2-data' },
+      { to: '/placement/bank', label: 'مخزن تعیین سطح', icon: 'bi-ui-checks-grid' },
+    ],
+  },
+]
+
+const FINANCE_GROUPS = [
+  {
+    title: 'مالی',
+    items: [
+      { to: '/payments', label: 'پرداخت‌ها', icon: 'bi-wallet2' },
       { to: '/dashboard', label: 'داشبورد', icon: 'bi-speedometer2' },
     ],
   },
@@ -42,17 +64,30 @@ const TEACHER_GROUPS = [
 export default function AdminSidebar({ open, onClose }) {
   const { hasRole, user } = useAuth()
   const isStaff = hasRole('admin', 'secretary', 'education')
+  const isFinanceOnly = user?.role === 'finance'
   const isAdmin = user?.role === 'admin'
-  const groups = isStaff
-    ? STAFF_GROUPS.map((g) => ({
-        ...g,
-        items: g.items.filter((item) => !item.adminOnly || isAdmin),
-      }))
-    : TEACHER_GROUPS
-  const kicker = isStaff ? 'پنل مدیریت' : 'پنل مدرس'
-  const title = isStaff ? 'مدیریت آموزشگاه' : 'جلسات و حضور'
 
-  return (
+  let groups = TEACHER_GROUPS
+  let kicker = 'پنل مدرس'
+  let title = 'جلسات و حضور'
+
+  if (isStaff) {
+    groups = STAFF_GROUPS.map((g) => ({
+      ...g,
+      items: g.items.filter((item) => !item.adminOnly || isAdmin),
+    }))
+    kicker = 'پنل مدیریت'
+    title = 'مدیریت آموزشگاه'
+  } else if (isFinanceOnly) {
+    groups = FINANCE_GROUPS
+    kicker = 'پنل مالی'
+    title = 'پرداخت‌ها و گزارش'
+  } else {
+    kicker = 'پنل مدرس'
+    title = 'کلاس‌ها و زبان‌آموزان'
+  }
+
+  const panel = (
     <>
       <div
         className={`admin-sidebar-backdrop ${open ? 'is-open' : ''}`}
@@ -93,7 +128,7 @@ export default function AdminSidebar({ open, onClose }) {
                       }
                       onClick={onClose}
                     >
-                      <i className={`bi ${item.icon}`} />
+                      <i className={`bi ${item.icon}`} aria-hidden="true" />
                       <span>{item.label}</span>
                     </NavLink>
                   </li>
@@ -105,4 +140,7 @@ export default function AdminSidebar({ open, onClose }) {
       </aside>
     </>
   )
+
+  if (typeof document === 'undefined') return null
+  return createPortal(panel, document.body)
 }

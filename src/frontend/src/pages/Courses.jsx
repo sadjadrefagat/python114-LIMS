@@ -7,6 +7,7 @@ import PaginationBar from '../components/PaginationBar'
 import { useClientPagination } from '../hooks/useClientPagination'
 import { useConfirmDialog } from '../hooks/useConfirmDialog.jsx'
 import CourseCard from '../components/CourseCard'
+import { AGE_GROUP_OPTIONS, ageGroupLabel } from '../utils/ageGroups'
 const TEACHING_METHODS = [
   { value: 'حضوری', label: 'حضوری' },
   { value: 'آنلاین', label: 'آنلاین' },
@@ -16,14 +17,6 @@ const TEACHING_METHODS = [
   { value: 'مهارت‌محور', label: 'مهارت‌محور' },
   { value: 'آزمون‌محور', label: 'آزمون‌محور' },
   { value: 'فشرده', label: 'فشرده' },
-]
-
-const AGE_GROUPS = [
-  { value: 'کودک', label: 'کودک' },
-  { value: 'نوجوان', label: 'نوجوان' },
-  { value: 'جوان', label: 'جوان' },
-  { value: 'بزرگسال', label: 'بزرگسال' },
-  { value: 'همه سنین', label: 'همه سنین' },
 ]
 
 const emptyForm = {
@@ -168,7 +161,7 @@ export default function Courses() {
         { label: 'زبان', value: course.LanguageName },
         { label: 'سطح', value: course.LevelName },
         { label: 'جلسات', value: course.SessionsCount != null ? `${course.SessionsCount} جلسه` : null },
-        { label: 'گروه سنی', value: course.AgeGroup },
+        { label: 'گروه سنی', value: ageGroupLabel(course.AgeGroup) },
         { label: 'شیوه آموزش', value: course.TeachingMethod },
         { label: 'هزینه', value: course.Cost != null ? formatMoney(course.Cost) : null },
       ],
@@ -286,8 +279,9 @@ export default function Courses() {
                 value={form.age_group}
                 onChange={(v) => setForm((p) => ({ ...p, age_group: v }))}
                 placeholder="انتخاب کنید"
-                options={AGE_GROUPS}
+                options={AGE_GROUP_OPTIONS}
               />
+              <div className="form-text">ثبت‌نام فقط برای زبان‌آموزانی که سنشان در این بازه باشد مجاز است.</div>
             </div>
             <div className="col-md-9">
               <label className="form-label">توضیحات (حداقل ۱۰ کاراکتر)</label>

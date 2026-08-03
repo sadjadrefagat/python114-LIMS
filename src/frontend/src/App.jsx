@@ -17,23 +17,40 @@ const Classes = lazy(() => import('./pages/Classes'))
 const Students = lazy(() => import('./pages/Students'))
 const Teachers = lazy(() => import('./pages/Teachers'))
 const Enrollments = lazy(() => import('./pages/Enrollments'))
+const Payments = lazy(() => import('./pages/Payments'))
 const Languages = lazy(() => import('./pages/Languages'))
 const Levels = lazy(() => import('./pages/Levels'))
 const Sessions = lazy(() => import('./pages/Sessions'))
+const Scores = lazy(() => import('./pages/Scores'))
+const PlacementExam = lazy(() => import('./pages/PlacementExam'))
+const PlacementBank = lazy(() => import('./pages/PlacementBank'))
 const Lookups = lazy(() => import('./pages/Lookups'))
 const Users = lazy(() => import('./pages/Users'))
 const About = lazy(() => import('./pages/About'))
+const Shop = lazy(() => import('./pages/Shop'))
+const ShopProduct = lazy(() => import('./pages/ShopProduct'))
+const Cart = lazy(() => import('./pages/Cart'))
+const ShopAdmin = lazy(() => import('./pages/ShopAdmin'))
+const MyCourses = lazy(() => import('./pages/MyCourses'))
+const TeacherClasses = lazy(() => import('./pages/TeacherClasses'))
+const TeacherCourses = lazy(() => import('./pages/TeacherCourses'))
+const TeacherStudents = lazy(() => import('./pages/TeacherStudents'))
+const TeacherAttendance = lazy(() => import('./pages/TeacherAttendance'))
+const Activities = lazy(() => import('./pages/Activities'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 const STAFF_ROLES = ['admin', 'secretary', 'education']
 const SESSION_ROLES = ['admin', 'secretary', 'education', 'teacher']
+const TEACHER_ROLES = ['teacher', 'admin', 'secretary', 'education']
+const FINANCE_ROLES = ['admin', 'secretary', 'education', 'finance']
 
 export default function App() {
   const { hasRole } = useAuth()
   const location = useLocation()
   const isStaff = hasRole(...STAFF_ROLES)
   const isTeacher = hasRole('teacher')
-  const showAdminNav = isStaff || isTeacher
+  const isFinance = hasRole('finance')
+  const showAdminNav = isStaff || isTeacher || (isFinance && !isStaff)
   const [adminNavOpen, setAdminNavOpen] = useState(false)
 
   useEffect(() => {
@@ -74,11 +91,75 @@ export default function App() {
                 <Route path="/courses" element={<Courses />} />
                 <Route path="/courses/:id" element={<CourseDetail />} />
                 <Route path="/about" element={<About />} />
+                <Route path="/shop" element={<Shop />} />
+                <Route path="/shop/admin" element={
+                  <ProtectedRoute roles={STAFF_ROLES}>
+                    <ShopAdmin />
+                  </ProtectedRoute>
+                } />
+                <Route path="/shop/:id" element={<ShopProduct />} />
+                <Route path="/cart" element={<Cart />} />
                 <Route
                   path="/dashboard"
                   element={
                     <ProtectedRoute>
                       <Dashboard />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/placement/bank"
+                  element={
+                    <ProtectedRoute roles={SESSION_ROLES}>
+                      <PlacementBank />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/placement"
+                  element={
+                    <ProtectedRoute>
+                      <PlacementExam />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/my-courses"
+                  element={
+                    <ProtectedRoute>
+                      <MyCourses />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/teacher/classes"
+                  element={
+                    <ProtectedRoute roles={TEACHER_ROLES}>
+                      <TeacherClasses />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/teacher/courses"
+                  element={
+                    <ProtectedRoute roles={TEACHER_ROLES}>
+                      <TeacherCourses />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/teacher/students"
+                  element={
+                    <ProtectedRoute roles={TEACHER_ROLES}>
+                      <TeacherStudents />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/teacher/attendance"
+                  element={
+                    <ProtectedRoute roles={TEACHER_ROLES}>
+                      <TeacherAttendance />
                     </ProtectedRoute>
                   }
                 />
@@ -115,6 +196,14 @@ export default function App() {
                   }
                 />
                 <Route
+                  path="/scores"
+                  element={
+                    <ProtectedRoute roles={SESSION_ROLES}>
+                      <Scores />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
                   path="/students"
                   element={
                     <ProtectedRoute roles={STAFF_ROLES}>
@@ -139,6 +228,14 @@ export default function App() {
                   }
                 />
                 <Route
+                  path="/payments"
+                  element={
+                    <ProtectedRoute roles={FINANCE_ROLES}>
+                      <Payments />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
                   path="/lookups"
                   element={
                     <ProtectedRoute roles={STAFF_ROLES}>
@@ -151,6 +248,14 @@ export default function App() {
                   element={
                     <ProtectedRoute roles={['admin']}>
                       <Users />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/activities"
+                  element={
+                    <ProtectedRoute roles={['admin']}>
+                      <Activities />
                     </ProtectedRoute>
                   }
                 />

@@ -78,7 +78,7 @@ def get_user_by_username(username: str) -> Optional[dict[str, Any]]:
         """SELECT U.Id, U.Username, U.Email, U.PasswordHash, U.FullName,
                   U.RoleRef, R.Code AS RoleCode, R.Name AS RoleName,
                   U.StudentRef, U.TeacherRef, U.IsActive,
-                  U.FailedLoginCount, U.LockedUntil, U.PreferredUILanguage
+                  U.FailedLoginCount, U.LockedUntil, U.PreferredUILanguage, U.UiTheme
            FROM AppUser U
            JOIN Role R ON U.RoleRef = R.Id
            WHERE U.Username = ?""",
@@ -91,7 +91,7 @@ def get_user_by_id(user_id: int) -> Optional[dict[str, Any]]:
         """SELECT U.Id, U.Username, U.Email, U.PasswordHash, U.FullName,
                   U.RoleRef, R.Code AS RoleCode, R.Name AS RoleName,
                   U.StudentRef, U.TeacherRef, U.IsActive,
-                  U.FailedLoginCount, U.LockedUntil, U.PreferredUILanguage
+                  U.FailedLoginCount, U.LockedUntil, U.PreferredUILanguage, U.UiTheme
            FROM AppUser U
            JOIN Role R ON U.RoleRef = R.Id
            WHERE U.Id = ?""",
@@ -119,6 +119,7 @@ def public_user(user: dict[str, Any]) -> dict[str, Any]:
         "student_ref": user.get("StudentRef"),
         "teacher_ref": user.get("TeacherRef"),
         "preferred_ui_language": user.get("PreferredUILanguage") or "fa",
+        "ui_theme": user.get("UiTheme") or "light",
         "is_active": bool(user.get("IsActive")),
     }
 

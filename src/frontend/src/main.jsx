@@ -8,14 +8,18 @@ import '@fontsource/vazirmatn/400.css'
 import '@fontsource/vazirmatn/700.css'
 import '@fontsource/vazirmatn/900.css'
 import './index.css'
+import './themes.css'
 import App from './App.jsx'
 import { AuthProvider } from './context/AuthContext.jsx'
+import { ThemeProvider } from './context/ThemeContext.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <BrowserRouter>
       <AuthProvider>
-        <App />
+        <ThemeProvider>
+          <App />
+        </ThemeProvider>
       </AuthProvider>
     </BrowserRouter>
   </StrictMode>,
